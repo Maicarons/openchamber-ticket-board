@@ -4,6 +4,7 @@ import type { HostClient, JsonValue } from '@openchamber/sdk';
 import { createTask } from '../src/domain/task.ts';
 import { deleteTask, loadTasks, saveTask, taskKey } from '../src/store/taskStore.ts';
 import { DEFAULT_PREFS, loadPrefs, savePrefs } from '../src/store/prefs.ts';
+import { DISMISSED_SESSIONS_KEY, loadDismissedSessions, saveDismissedSessions } from '../src/store/dismissedSessions.ts';
 
 /** In-memory stand-in for host.storage that serializes like the host (JSON, 64 KiB per value). */
 const fakeHost = () => {
@@ -77,4 +78,18 @@ test('prefs round-trip and fall back to defaults on junk', async () => {
   assert.deepEqual(await loadPrefs(host), { projectId: 'p9', query: 'login', openTaskId: 't_x' });
   data.set('prefs', JSON.stringify(['junk']));
   assert.deepEqual(await loadPrefs(host), DEFAULT_PREFS);
+});
+
+test('dismissed session ids persist across reload and ignore malformed stored values', async () => {
+  const { host, data } = fakeHost();
+  const dismissed = await loadDismissedSessions(host);
+  assert.deepEqual([...dismissed], []);
+
+  dismissed.add('ses_deleted');
+  dismissed.add('ses_archived');
+  await saveDismissedSessions(host, dismissed);
+  assert.deepEqual([...(await loadDismissedSessions(host))].sort(), ['ses_archived', 'ses_deleted']);
+
+  data.set(DISMISSED_SESSIONS_KEY, JSON.stringify(['ses_kept', '', 42, null]));
+  assert.deepEqual([...await loadDismissedSessions(host)], ['ses_kept']);
 });

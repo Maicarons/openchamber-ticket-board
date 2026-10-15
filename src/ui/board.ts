@@ -5,6 +5,7 @@ import { ALL_PROJECTS, NO_PROJECT, groupColumns, planDrop, rankAtEnd, type Board
 import { deleteTask, loadTasks, saveTask } from '../store/taskStore.ts';
 import { loadPrefs, savePrefs, type Prefs } from '../store/prefs.ts';
 import { loadOrphanWatermark, saveOrphanWatermark } from '../store/orphanWatermark.ts';
+import { loadDismissedSessions, saveDismissedSessions } from '../store/dismissedSessions.ts';
 import { describeHostError, describeStartSessionDelivery, fetchSessions, fetchWorktrees, watchProjects } from '../host/workspace.ts';
 import { fetchServiceBranches } from '../host/branchService.ts';
 import { createSessionSync } from '../host/sessionSync.ts';
@@ -186,7 +187,12 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
   const sessionSync = createSessionSync(host, SYNC_OPTIONS, applyAgentStatusChange, onSessionGone);
   const worktreeSync = createWorktreeSync(host, onWorktreeGone);
 
-  const linkedSessionIds = () => new Set(tasks.filter((t) => t.sessionId).map((t) => t.sessionId as string));
+  /** A deleted task's session stays out of automatic adoption, even after a reload. */
+  let dismissedSessionIds = new Set<string>();
+  const excludedSessionIds = () => new Set([
+    ...dismissedSessionIds,
+    ...tasks.flatMap((task) => task.sessionId ? [task.sessionId] : []),
+  ]);
   /**
    * Every session id this mount has ever tried to adopt, success or
    * failure. A live session's `onSessions` snapshot fires continuously
@@ -248,7 +254,7 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
    * this feature's first use) are left alone, by design.
    */
   const adoptRunningSession = (projectId: string, session: { id: string; title: string; createdAt: number }, status: TaskStatus) => {
-    if (disposed || startingAgents > 0 || attemptedSessions.has(session.id) || linkedSessionIds().has(session.id)) return;
+    if (disposed || startingAgents > 0 || attemptedSessions.has(session.id) || excludedSessionIds().has(session.id)) return;
     if (session.createdAt < orphanWatermark) return;
     attemptedSessions.add(session.id);
     void (async () => {
@@ -339,7 +345,29 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
         openDetail(task.id);
       },
       onDelete: async () => {
-        await deleteTask(host, task.id);
+        const sessionId = task.sessionId;
+        const alreadyDismissed = sessionId !== null && dismissedSessionIds.has(sessionId);
+        if (sessionId && !alreadyDismissed) {
+          // Persist the dismissal before removing the task. The orphan watcher
+          // can receive a session snapshot at any time, including during this
+          // delete, and must see the exclusion before the task link disappears.
+          dismissedSessionIds.add(sessionId);
+          try {
+            await saveDismissedSessions(host, dismissedSessionIds);
+          } catch (error) {
+            dismissedSessionIds.delete(sessionId);
+            throw error;
+          }
+        }
+        try {
+          await deleteTask(host, task.id);
+        } catch (error) {
+          if (sessionId && !alreadyDismissed) {
+            dismissedSessionIds.delete(sessionId);
+            void saveDismissedSessions(host, dismissedSessionIds).catch(() => undefined);
+          }
+          throw error;
+        }
         setTasks(tasks.filter((t) => t.id !== task.id));
         closeDetail();
         render();
@@ -365,6 +393,13 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
           status: task.status === 'backlog' ? 'todo' : task.status,
         });
         await saveTaskRetrying(updated);
+        if (dismissedSessionIds.delete(sessionId)) {
+          // Explicitly linking a dismissed session brings it back by choice.
+          // If cleanup fails, retain the in-memory dismissal; the new task
+          // link still prevents adoption, and a later delete will keep it out.
+          try { await saveDismissedSessions(host, dismissedSessionIds); }
+          catch { dismissedSessionIds.add(sessionId); }
+        }
         setTasks(tasks.map((t) => (t.id === task.id ? updated : t)));
         render();
         closeDetail();
@@ -655,10 +690,13 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
   const reload = async () => {
     refresh.update({ loading: true });
     try {
-      const [{ tasks: loaded, failedKeys }, loadedPrefs, watermark] = await Promise.all([loadTasks(host), loadPrefs(host), loadOrphanWatermark(host)]);
+      const [{ tasks: loaded, failedKeys }, loadedPrefs, watermark, dismissed] = await Promise.all([
+        loadTasks(host), loadPrefs(host), loadOrphanWatermark(host), loadDismissedSessions(host),
+      ]);
       // A manual/initial reload is a clean slate for the retry guards above.
       attemptedSessions = new Set();
       lastAttemptedStatus = new Map();
+      dismissedSessionIds = dismissed;
       if (watermark === null) {
         // First time this feature has ever run: nothing that already exists right now is "going forward".
         orphanWatermark = Date.now();
@@ -696,7 +734,7 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
   void reload().finally(() => {
     spinner.dispose(); spinnerSlot.hidden = true;
     // Wait for the first load so a session already linked to a persisted task is never mistaken for an orphan.
-    if (!disposed) orphanWatcher = watchOrphanSessions(host, linkedSessionIds, (found) => adoptRunningSession(found.projectId, found.session, found.status));
+    if (!disposed) orphanWatcher = watchOrphanSessions(host, excludedSessionIds, (found) => adoptRunningSession(found.projectId, found.session, found.status));
   });
 
   return {

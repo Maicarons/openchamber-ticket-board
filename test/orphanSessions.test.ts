@@ -76,6 +76,21 @@ test('a session already linked to a task is never reported', async () => {
   watcher.dispose();
 });
 
+test('a dismissed session stays excluded while an unrelated sidebar session is still adopted', async () => {
+  const { host, pushProjects, pushSessions } = fakeHost();
+  const found: string[] = [];
+  const dismissedSessionIds = new Set(['ses_dismissed']);
+  const watcher = watchOrphanSessions(host, () => dismissedSessionIds, (f) => found.push(f.session.id));
+  pushProjects(projectsSnapshot(['p1']));
+  await Promise.resolve();
+  pushSessions('p1', sessionsSnapshot('p1', [
+    session('ses_dismissed'),
+    session('ses_started_from_sidebar'),
+  ]));
+  assert.deepEqual(found, ['ses_started_from_sidebar']);
+  watcher.dispose();
+});
+
 test('dropping a project releases its session subscription', async () => {
   const { host, pushProjects, sessionUnsubscribed } = fakeHost();
   const watcher = watchOrphanSessions(host, () => new Set(), () => {});
