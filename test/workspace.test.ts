@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HostRequestError, type GuestProject, type GuestSessionsSnapshot } from '@openchamber/sdk';
-import { describeHostError, fetchSessions, fetchWorktrees, projectForDirectory, type WorkspaceHost } from '../src/host/workspace.ts';
+import { describeHostError, describeStartSessionDelivery, fetchSessions, fetchWorktrees, projectForDirectory, type WorkspaceHost } from '../src/host/workspace.ts';
 
 const project = (id: string, directory: string): GuestProject => ({ id, name: id, directory });
 
@@ -86,4 +86,11 @@ test('describeHostError gives an actionable message for known codes and falls ba
   assert.match(describeHostError(new HostRequestError('HOST_TIMEOUT', 'x')), /did not answer/);
   assert.equal(describeHostError(new Error('boom')), 'boom');
   assert.equal(describeHostError('plain'), 'plain');
+});
+
+test('describeStartSessionDelivery is null only when the description was actually sent', () => {
+  assert.equal(describeStartSessionDelivery('sent'), null);
+  assert.match(describeStartSessionDelivery('no-model') ?? '', /model/);
+  assert.match(describeStartSessionDelivery('skipped') ?? '', /skipped/);
+  assert.match(describeStartSessionDelivery('failed') ?? '', /failed/);
 });

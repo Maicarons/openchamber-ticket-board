@@ -1,6 +1,6 @@
 import type { GuestSessionActivity } from '@openchamber/sdk';
 import { DEFAULT_SYNC_OPTIONS, statusForSession, type AgentOutcome, type SyncOptions } from './sync.ts';
-import type { TaskStatus } from './task.ts';
+import { DEFAULT_TASK_TITLE, TITLE_MAX, type Task, type TaskStatus } from './task.ts';
 
 export type OrphanCandidate = {
   id: string;
@@ -39,4 +39,21 @@ export const titleForOrphanSession = (session: Pick<OrphanCandidate, 'id' | 'tit
   const title = session.title.trim();
   if (title && title !== session.id) return title.slice(0, 200);
   return projectName ? `New session in ${projectName}` : `New session (${session.id.slice(0, 8)})`;
+};
+
+/**
+ * The title given to the session `Start Agent` creates. A task you haven't
+ * renamed yet is still titled `DEFAULT_TASK_TITLE` ("New task") — sending
+ * that straight through would leave every unrenamed task's session titled
+ * identically and unhelpfully, so a real one is derived from the
+ * description instead: its first line, the same text the agent is about to
+ * read as its own first message. Falls back to the placeholder only when
+ * there's truly nothing else to go on (no title, no description).
+ */
+export const sessionTitleForTask = (task: Pick<Task, 'title' | 'description'>): string => {
+  const title = task.title.trim();
+  if (title && title !== DEFAULT_TASK_TITLE) return title.slice(0, TITLE_MAX);
+  const firstLine = task.description.trim().split('\n')[0]?.trim() ?? '';
+  if (firstLine) return firstLine.slice(0, TITLE_MAX);
+  return title || DEFAULT_TASK_TITLE;
 };

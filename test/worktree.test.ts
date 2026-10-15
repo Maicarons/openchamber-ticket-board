@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { StartSessionResult } from '@openchamber/sdk';
 import {
+  branchNameConflictsWithBase,
   buildBaseBranchOptions,
   buildBaseBranchOptionsFromService,
   buildSessionWorktree,
-  CUSTOM_BASE_BRANCH_OPTION,
   describeWorktreeOption,
   hasKnownBranches,
   parseBranchServiceResponse,
@@ -21,7 +21,7 @@ test('buildSessionWorktree maps the picker selection to the startSession shape',
   assert.deepEqual(buildSessionWorktree('/repo/.worktrees/foo', '', undefined), { kind: 'existing', directory: '/repo/.worktrees/foo' });
 });
 
-test('buildBaseBranchOptions lists each distinct worktree branch, plus the default and custom options', () => {
+test('buildBaseBranchOptions lists each distinct worktree branch, plus the default option', () => {
   const worktrees = [
     { directory: '/a', name: 'a', branch: 'main', status: 'ready' as const },
     { directory: '/b', name: 'b', branch: 'develop', status: 'ready' as const },
@@ -31,16 +31,20 @@ test('buildBaseBranchOptions lists each distinct worktree branch, plus the defau
     { id: '', label: 'Use project default' },
     { id: 'develop', label: 'develop' },
     { id: 'main', label: 'main' },
-    { id: '__custom__', label: 'Custom branch…' },
   ]);
-  assert.deepEqual(buildBaseBranchOptions([]), [{ id: '', label: 'Use project default' }, { id: '__custom__', label: 'Custom branch…' }]);
+  assert.deepEqual(buildBaseBranchOptions([]), [{ id: '', label: 'Use project default' }]);
 });
 
-test('resolveBaseBranch picks the dropdown value, or the trimmed custom field when "Custom branch…" is selected', () => {
-  assert.equal(resolveBaseBranch('', 'ignored'), undefined);
-  assert.equal(resolveBaseBranch('main', 'ignored'), 'main');
-  assert.equal(resolveBaseBranch(CUSTOM_BASE_BRANCH_OPTION, '  release/2.0  '), 'release/2.0');
-  assert.equal(resolveBaseBranch(CUSTOM_BASE_BRANCH_OPTION, '   '), undefined);
+test('resolveBaseBranch treats an empty selection as "use project default"', () => {
+  assert.equal(resolveBaseBranch(''), undefined);
+  assert.equal(resolveBaseBranch('main'), 'main');
+});
+
+test('branchNameConflictsWithBase catches a new branch based on itself', () => {
+  assert.equal(branchNameConflictsWithBase('fix/x', 'fix/x'), true);
+  assert.equal(branchNameConflictsWithBase('  fix/x  ', 'fix/x'), true, 'untrimmed input still catches the conflict');
+  assert.equal(branchNameConflictsWithBase('fix/x', 'main'), false);
+  assert.equal(branchNameConflictsWithBase('fix/x', undefined), false, '"use project default" is never a known conflict');
 });
 
 test('resolveTaskWorktree prefers the host-reported worktree', () => {
@@ -83,7 +87,6 @@ test('buildBaseBranchOptionsFromService groups local before remote, preserves th
     { id: 'fix/login', label: 'fix/login', hint: undefined },
     { id: 'main', label: 'main', hint: undefined },
     { id: 'origin/develop', label: 'origin/develop', hint: 'remote' },
-    { id: '__custom__', label: 'Custom branch…' },
   ]);
 });
 

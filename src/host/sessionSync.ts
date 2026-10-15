@@ -1,12 +1,15 @@
 import type { GuestSessionsSnapshot, HostClient } from '@openchamber/sdk';
 import { statusForSession, type SyncOptions } from '../domain/sync.ts';
+import { sessionLinkState } from '../domain/unlink.ts';
 import type { Task, TaskStatus } from '../domain/task.ts';
 
 export type SessionSyncHost = Pick<HostClient, 'onSessions'>;
 
 /**
  * Watches the live session state behind every task that has one linked, and
- * reports the status change it implies. Subscribes once per distinct
+ * reports both the status change it implies and the disappearance of the
+ * session itself (deleted or archived from the sidebar — the task's link
+ * must not outlive what it points at). Subscribes once per distinct
  * project among those tasks (not once per task) and tears a project's
  * subscription down once no watched task still needs it.
  */
@@ -14,19 +17,27 @@ export const createSessionSync = (
   host: SessionSyncHost,
   options: SyncOptions,
   onStatusChange: (taskId: string, next: TaskStatus) => void,
+  onSessionGone?: (taskId: string, sessionId: string) => void,
 ) => {
   const subscriptions = new Map<string, Promise<() => void>>();
   let tasksById = new Map<string, Task>();
+  /** Last-seen directory per session id, so an absent session's per-directory coverage can still be checked. */
+  const sessionDirectories = new Map<string, string>();
   let disposed = false;
 
   const applySnapshot = (projectId: string, snapshot: GuestSessionsSnapshot) => {
     if (disposed) return;
-    for (const session of snapshot.sessions) {
-      for (const task of tasksById.values()) {
-        if (task.projectId !== projectId || task.sessionId !== session.id) continue;
-        const next = statusForSession(task.status, session.activity, session.outcome, options);
-        if (next) onStatusChange(task.id, next);
+    for (const session of snapshot.sessions) sessionDirectories.set(session.id, session.directory);
+    for (const task of tasksById.values()) {
+      if (task.projectId !== projectId || !task.sessionId) continue;
+      if (onSessionGone && sessionLinkState(task.sessionId, sessionDirectories.get(task.sessionId) ?? null, snapshot) === 'gone') {
+        onSessionGone(task.id, task.sessionId);
+        continue;
       }
+      const session = snapshot.sessions.find((candidate) => candidate.id === task.sessionId);
+      if (!session) continue;
+      const next = statusForSession(task.status, session.activity, session.outcome, options);
+      if (next) onStatusChange(task.id, next);
     }
   };
 

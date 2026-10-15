@@ -1,4 +1,4 @@
-import { HostRequestError, type GuestProject, type GuestSessionRecord, type GuestSessionsSnapshot, type GuestWorktree, type GuestWorktreesSnapshot, type HostClient } from '@openchamber/sdk';
+import { HostRequestError, type GuestProject, type GuestSessionRecord, type GuestSessionsSnapshot, type GuestWorktree, type GuestWorktreesSnapshot, type HostClient, type StartSessionSent } from '@openchamber/sdk';
 
 export type WorkspaceHost = Pick<HostClient, 'onProjects' | 'onSessions' | 'onWorktrees' | 'openSession'>;
 
@@ -96,4 +96,20 @@ export const describeHostError = (error: unknown) => {
     }
   }
   return error instanceof Error ? error.message : String(error);
+};
+
+/**
+ * Why `startSession`'s `text` (the task's description) might not have
+ * reached the agent as its first message, even though the session itself
+ * was created successfully. `null` means it was sent — nothing to tell the
+ * user. The description stays safe on the task either way; it's not lost,
+ * only not delivered automatically.
+ */
+export const describeStartSessionDelivery = (sent: StartSessionSent): string | null => {
+  switch (sent) {
+    case 'sent': return null;
+    case 'no-model': return 'no model is configured for this session';
+    case 'skipped': return "OpenChamber skipped sending it — the session may be waiting on something else first (check the chat)";
+    case 'failed': return 'OpenChamber reported the send itself failed';
+  }
 };

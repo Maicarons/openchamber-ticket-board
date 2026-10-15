@@ -12,6 +12,8 @@ export const STATUS_LABELS: Record<TaskStatus, string> = {
 export const TASK_SCHEMA_VERSION = 1;
 export const TITLE_MAX = 200;
 export const DESCRIPTION_MAX = 16000;
+/** What `Add task` titles a brand-new, not-yet-edited task. Treated as "no real title yet" wherever that distinction matters (e.g. choosing a session's title). */
+export const DEFAULT_TASK_TITLE = 'New task';
 const REF_MAX = 512;
 const ID_PATTERN = /^t_[a-z0-9]{6,40}$/;
 

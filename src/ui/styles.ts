@@ -33,8 +33,11 @@ html,body{margin:0;min-height:100%;background:var(--oc-bg);color:var(--oc-fg);fo
 .kb-muted{color:var(--oc-muted);font-size:12px}
 .kb-mono{font:12px var(--oc-mono);color:var(--oc-muted)}
 .kb-empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:48px 16px;color:var(--oc-muted);text-align:center}
-.kb-add-task .oc-sdk-input{font-size:17px;height:44px;padding:0 14px}
-.kb-add-task .oc-sdk-field-label{font-size:12px}
+.kb-radio-group{display:flex;flex-direction:column;gap:10px}
+.kb-radio-option{display:flex;gap:10px;align-items:flex-start;cursor:pointer}
+.kb-radio-option input{margin-top:3px;accent-color:var(--oc-primary)}
+.kb-radio-title{font-weight:550;font-size:13px}
+.kb-radio-desc{font-size:12px;color:var(--oc-muted);margin-top:2px}
 .kb-banner{display:none}
 .kb-banner[data-show]{display:block}
 [hidden]{display:none!important}

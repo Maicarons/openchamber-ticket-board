@@ -24,37 +24,32 @@ export const buildSessionWorktree = (destination: string, branchName: string, ba
 };
 
 export const DEFAULT_BASE_BRANCH_OPTION = '';
-export const CUSTOM_BASE_BRANCH_OPTION = '__custom__';
+
+/** An empty selection means "use the project default" — exactly what omitting `baseBranch` means to the host. */
+export const resolveBaseBranch = (selectedOption: string): string | undefined => selectedOption || undefined;
 
 /**
- * Options for the "Base branch" dropdown. The SDK has no API to list a
- * repository's branches — only `GuestWorktree.branch`, one per *existing*
- * worktree — so the dropdown is built from those (deduplicated), plus
- * "Use project default" and a "Custom branch…" escape hatch for anything
- * not already checked out as a worktree.
+ * A new branch can't be based on itself: either it doesn't exist yet (there's
+ * nothing to base it on), or it already does (git refuses to create a branch
+ * with a name already taken). `resolvedBaseBranch` is `resolveBaseBranch`'s
+ * output — `undefined` ("use project default") is never a conflict, since we
+ * don't know what that resolves to.
+ */
+export const branchNameConflictsWithBase = (branchName: string, resolvedBaseBranch: string | undefined): boolean =>
+  resolvedBaseBranch !== undefined && branchName.trim() === resolvedBaseBranch;
+
+/**
+ * Options for the "Based on" dropdown, built from the project's existing
+ * worktrees — the SDK has no API to list a repository's full branch set,
+ * only `GuestWorktree.branch`, one per *existing* worktree. Used when the
+ * local git-branch service (below) isn't approved or available.
  */
 export const buildBaseBranchOptions = (worktrees: readonly GuestWorktree[]) => {
   const branches = [...new Set(worktrees.map((w) => w.branch).filter((b): b is string => Boolean(b)))].sort();
-  return [
-    { id: DEFAULT_BASE_BRANCH_OPTION, label: 'Use project default' },
-    ...branches.map((branch) => ({ id: branch, label: branch })),
-    { id: CUSTOM_BASE_BRANCH_OPTION, label: 'Custom branch…' },
-  ];
+  return [{ id: DEFAULT_BASE_BRANCH_OPTION, label: 'Use project default' }, ...branches.map((branch) => ({ id: branch, label: branch }))];
 };
 
-/** Resolves the base-branch dropdown's selection (plus the custom text field, when shown) to what `buildSessionWorktree` expects. */
-export const resolveBaseBranch = (selectedOption: string, customValue: string): string | undefined => {
-  if (selectedOption === CUSTOM_BASE_BRANCH_OPTION) return customValue.trim() || undefined;
-  return selectedOption || undefined;
-};
-
-/**
- * Whether the dropdown has any *real* branch to offer. Most projects won't
- * have an existing worktree the first time this is opened, so this is
- * commonly `false` — in which case the UI should default straight to the
- * "Custom branch…" text field rather than show a dropdown with nothing
- * useful in it.
- */
+/** Whether the dropdown has any real branch to offer beyond "Use project default". */
 export const hasKnownBranches = (worktrees: readonly GuestWorktree[]): boolean => worktrees.some((w) => Boolean(w.branch));
 
 /**
@@ -77,17 +72,15 @@ export const describeWorktreeOption = (worktree: GuestWorktree) => ({
   disabled: worktree.status !== 'ready',
 });
 
-// --- Optional local git-branch service (contributes.service, permissions.exec: ["git"]) ---
-// The SDK itself has no API to list a repository's branches (verified: no
-// method on HostClient does this). A declared local service is the SDK's
-// own sanctioned mechanism for "things a page cannot reach" — the official
-// `git-graph-status` example uses the same pattern to read git history.
-// This is read-only and only ever runs `git -C <directory> for-each-ref`.
-// It's optional: every function here degrades to `null`/the worktree-based
-// list on any failure, so a user who hasn't approved the service (or is on
-// a platform that doesn't support services at all) still gets the fallback
-// from `buildBaseBranchOptions` above, never an error.
-
+/**
+ * The local git-branch service (`contributes.service`, `permissions.exec:
+ * ["git"]`) is the only way to list a repository's real branches — the SDK
+ * has no API for this. It runs exactly one command, read-only:
+ * `git for-each-ref`, for a project directory already known to the panel.
+ * Every function below degrades to `null` on any failure (not approved,
+ * not running, unsupported platform), so the caller always has the
+ * worktree-derived fallback above, never an error.
+ */
 export type ServiceBranch = { name: string; kind: 'local' | 'remote' };
 
 /** Parses `git for-each-ref --format=%(refname) refs/heads refs/remotes`, skipping each remote's own `HEAD` pointer. */
@@ -105,9 +98,9 @@ export const parseGitRefOutput = (stdout: string): ServiceBranch[] => {
 
 /**
  * Local branches first (most likely what you want to branch from), then
- * remote, deduplicated. Preserves the order `branches` arrived in rather
- * than re-sorting alphabetically — the service lists them most-recently-active
- * first, a far more useful default than A→Z for picking a base branch.
+ * remote, deduplicated. Preserves the order `branches` arrived in — the
+ * service lists them most-recently-active first, more useful than A→Z for
+ * picking a base branch.
  */
 export const buildBaseBranchOptionsFromService = (branches: readonly ServiceBranch[]) => {
   const seen = new Set<string>();
@@ -119,12 +112,7 @@ export const buildBaseBranchOptionsFromService = (branches: readonly ServiceBran
     const option = { id: branch.name, label: branch.name, hint: branch.kind === 'remote' ? 'remote' : undefined };
     (branch.kind === 'remote' ? remote : local).push(option);
   }
-  return [
-    { id: DEFAULT_BASE_BRANCH_OPTION, label: 'Use project default' },
-    ...local,
-    ...remote,
-    { id: CUSTOM_BASE_BRANCH_OPTION, label: 'Custom branch…' },
-  ];
+  return [{ id: DEFAULT_BASE_BRANCH_OPTION, label: 'Use project default' }, ...local, ...remote];
 };
 
 /** Validates the service's `GET /branches` body. `null` means it wasn't a usable answer — treat exactly like the service being unavailable. */

@@ -10,7 +10,6 @@ test('fetchServiceBranches returns options built from a successful answer', asyn
   assert.deepEqual(options, [
     { id: '', label: 'Use project default' },
     { id: 'main', label: 'main', hint: undefined },
-    { id: '__custom__', label: 'Custom branch…' },
   ]);
 });
 

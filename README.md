@@ -1,48 +1,127 @@
 # OpenChamber Kanban
 
-A local-first Kanban board extension for [OpenChamber](https://openchamber.dev), built with the official `@openchamber/sdk`. Boards, tasks, and preferences persist in `host.storage` on your own OpenChamber server — nothing leaves your machine.
+This is a Kanban board for OpenChamber. A Kanban board is a board with columns, like Backlog, To Do, and Done. You put tasks on cards. You move cards between columns.
 
-Full design notes, SDK findings, and known limitations: see `ARCHITECTURE.md`.
+This board does one more thing. It can start a real AI agent chat for a task. It keeps the task and the chat linked.
+
+All your data stays on your own OpenChamber server. This extension does not send your data to any other server.
 
 ## What it does
 
-- A full-screen Kanban board (Backlog / To Do / In Progress / Review / Done), opened from OpenChamber's Extension pages menu
-- Create, edit, delete tasks; drag-and-drop between columns
-- **Start Agent**: creates a real OpenCode session (optionally in a new or existing git worktree) with the task's description as the first message, and links it back to the task
-- Link an existing session to a task, or open its chat directly
-- Live agent status (running / needs you / failed) drives the task's column automatically — moving to Review, never to Done; only you mark a task Done
-- Sessions started outside the board are adopted as new tasks going forward (never retroactively)
+- Click **Add task**. This creates and saves a new task right away, titled "New task", and opens it for you to edit. Later edits are saved by **Save changes** or when you click **Start Agent**.
+- In the task, change the title. Add a description. The description is sent as the agent's first message.
+- Choose a project.
+- Click **Start Agent**. You do not need to click **Save changes** first. It uses and saves the title, description, and project you have on screen. Pick where it runs: the project's main folder, a new branch, or a worktree you already have.
+- The new chat uses the task title. If the title is still "New task", it uses the first line of the description instead. The description is sent as the first message. If OpenChamber reports that it was not sent, the board tells you; the description remains saved on the task, so you can open the chat and paste it in.
+- The task now links to that chat and moves to **In Progress**. Click the task card later, and it opens the same chat again.
+- You can also link an already-running chat to a task, instead of starting a new one.
+- Start a session from a task on this board, and it stays linked to that task. It does not create another task. Start a session from the OpenChamber sidebar, and the board can add a new task for it automatically, as described below.
+- Delete or archive a session, or delete a worktree, in the OpenChamber sidebar — the task is unlinked automatically. The task itself stays on the board. You can start a new agent for it, or link another session.
+- Move a task to any column two ways: drag the card, or open the task and click one of the "Move to" buttons. There is one button for every column.
 
-## Requirements
+### The Review column moves on its own
 
-- OpenChamber **≥1.24.0** (the Extensions SDK didn't exist before that)
-- `git` on PATH, only if you want the real branch list in "Based on" (optional local service — see below)
+Some tasks move to the **Review** column by themselves. You do not drag them there. This happens when:
+
+- the agent finishes its work, or
+- the agent asks you a question, or
+- the agent needs a permission from you, or
+- the agent's run fails.
+
+A task never moves to **Done** by itself. Only you can mark a task Done.
+
+A task that moved to Review, and you have not opened yet, gets an **orange border** on the left side of the card. This border means: "Look at this one." The newest such task is always at the top of the Review column, above tasks you already saw.
+
+Open the task (click it, or click Edit), and the border goes away.
+
+### Tasks can also appear by themselves
+
+If you start a chat in OpenChamber another way — for example, from the sidebar — this board can still find it and make a task for it. The board adopts new, active sessions while it is open, and checks again when you open it. This only works for sessions created **after** you first open the board. It does not look back at older sessions. Sessions started with **Start Agent** are linked to the task you started from, not adopted as another task.
+
+## How it works (a simple picture)
+
+```
+   Kanban Board
+        |
+        |  click a task with no chat yet, or click Start Agent
+        v
+   Task Detail
+        |
+        |  Start Agent / Open Chat
+        v
+   OpenCode Chat  <-----> the real agent does the work here
+        |
+        |  the task stays linked to this chat
+        v
+   Kanban Board  (the task shows the new status, for example Review)
+```
 
 ## Install
 
-```
+**1. Get the code.**
+
+```bash
+git clone https://github.com/<your-username>/openchamber-kanban.git
 cd openchamber-kanban
-npm install
-npm run check   # typecheck + unit tests + build panel/main.js, panel/page.js, service/main.js
 ```
 
-In OpenChamber: **Settings → Extensions → Add**, paste this folder's absolute path on your machine, and approve the requested capabilities:
+**2. Build it.**
 
-- `sessions` — list/open projects and sessions
-- `prompt` — send the task description as the agent's first message when you click Start Agent
-- a local service — reads `git branch` (read-only) for the "Based on" branch picker. See "Local service" below before approving.
+```bash
+npm install
+npm run check
+```
 
-## Local service: what it actually does
+`npm run check` does three things: it checks the TypeScript types, it runs all tests, and it builds the files OpenChamber needs. If this command finishes with no errors, the build is good.
 
-To list real git branches in the "Based on" dropdown (there's no SDK API for this), the extension declares a `contributes.service`: a small local process OpenChamber spawns and proxies to, the same mechanism OpenChamber's own `git-graph-status` example uses. Source: `src/service/main.ts`.
+**3. Add it to OpenChamber.**
 
-- Runs **exactly one command**: `git -C <project-directory> for-each-ref --sort=-committerdate --count=200 --format=%(refname) refs/heads refs/remotes` — read-only, never writes, never touches history.
-- Only for a directory that's already one of your registered OpenChamber projects.
-- Listens on `127.0.0.1` only; every request is bearer-authenticated by the host itself (the panel never sees the token or the port).
-- If you don't approve it, or it's unavailable (unsupported platform, not running), the board falls back to listing branches from your project's existing worktrees plus a "Custom branch…" text field — no error, no missing feature, just a shorter list.
+- Open OpenChamber.
+- Go to **Settings → Extensions**.
+- Click **Add**.
+- Paste the full folder path, for example `~/path/to/openchamber-kanban`.
+- OpenChamber shows you three permissions to approve:
+  - **Access projects and sessions** — lets the board see your projects and chats, and open or create chats.
+  - **Send messages in your sessions** — lets **Start Agent** send your task's description as the first chat message.
+  - **Run a local service** — see "What the local service does" below. This is the only reason this permission exists.
+- Click **Allow and enable**.
+- Open **Kanban** from the Extension pages menu, above your session list.
 
-The approval dialog will say a service "runs with your full user access" — that's inherent to how the SDK's service mechanism works (it isn't sandboxed, by design), not something scoped down for this one. Read the source in `src/service/main.ts` if you want to verify what it does yourself before approving.
+**Requirement:** OpenChamber version 1.24.0 or newer. Older versions do not have the Extensions feature at all.
 
-## Scope
+## What the local service does — and nothing else
 
-Everything in the brief this was built from (Kanban board, Start Agent, worktree/branch selection, agent-status sync, auto-adopting orphan sessions) is implemented. See `ARCHITECTURE.md` for what's *not* possible through the SDK and why (listing a repository's full branch set without the local service, seeing Chats that aren't tied to a project, and others).
+The approval screen calls this "Run a local service" and says it runs with your full user access. That sounds broad, so here is exactly what it does:
+
+- It runs **one command only**: `git for-each-ref`, which **reads** your repository's branch names. It does not read file contents, does not read commit messages, does not write anything, and does not touch your git history.
+- It only runs for a project directory already in your OpenChamber project list — never any other folder.
+- It only answers OpenChamber itself, on your own computer. It never connects to the internet on its own.
+- Its only purpose is filling in the "Based on" dropdown in **Start Agent** with your repository's real branch names, so you can search for one instead of typing it by hand.
+
+If you don't approve it, or it isn't running, "Based on" still works — it just offers fewer branches (only ones that already have a worktree) plus "Use project default".
+
+## What this extension cannot do
+
+Some things are not possible with the current OpenChamber SDK (SDK = the toolkit extensions are built with). This is not a bug. It is a real limit.
+
+- **It cannot see "Chats."** In OpenChamber, a Chat is a conversation with no project attached. This board only knows about chats inside a project. A Chat with no project never shows up here.
+- **It cannot watch for new chats while you are in a different chat.** Starting a chat always switches your screen away from this board. The board can only check for new chats the next time you open it.
+- **It cannot set a separate folder name for a new worktree.** The branch name and the folder name are always the same.
+
+## Adding screenshots to this file
+
+I (the assistant) can see a screenshot you paste into our chat, but I cannot save that image file by myself — I have no way to write it to disk from the chat.
+
+To add a screenshot here:
+
+1. Save the image yourself into this folder, for example in a new `screenshots/` folder (`screenshots/board.png`).
+2. Tell me the file name.
+3. I will add a line like this to the README:
+
+```markdown
+![Kanban board](screenshots/board.png)
+```
+
+## Project files
+
+See `ARCHITECTURE.md` for the full technical write-up: how each file works and the exact SDK limits behind each design choice.

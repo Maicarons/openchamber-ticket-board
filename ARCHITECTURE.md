@@ -1,435 +1,204 @@
-# Architecture & SDK findings
+# Architecture
 
-## Status update: OpenChamber updated, Phase 2 features pulled forward
+A local-first Kanban board extension for OpenChamber, built with the official `@openchamber/sdk`. All task and preference data lives in `host.storage` on the connected OpenChamber server — nothing is sent anywhere else, and no capability beyond what's listed below is used.
 
-You've since updated OpenChamber to 2.3.2 (verified by decompiling the
-installed renderer — real `contributes`/`openchamber.sdk` plumbing is
-present now). At your direction, three pieces of Phase 2/3 were pulled
-forward into what's installed today: **Start Agent** with worktree
-selection, **click-to-chat** card behavior, and **auto-adopting a running
-session with no task** as a new In Progress task. See "Agent-status sync"
-and "Start Agent" sections below for what that means and what it needs.
-**The manifest now requests `prompt` in addition to `sessions`** (required
-for `startSession`'s `text`, i.e. sending the description as the agent's
-first message) — reinstalling will ask you to approve it again.
+Requires OpenChamber `>=1.24.0` — the Extensions SDK (`Settings → Extensions`, panels, pages, `host.storage`) doesn't exist in earlier versions.
 
-## Critical finding: your installed OpenChamber predates the Extension SDK (resolved)
+## Manifest and capabilities
 
-`/Applications/OpenChamber.app` is **1.22.0**. The entire Extensions/SDK system
-— `Settings → Extensions`, panels, full-screen pages, `host.storage`,
-`listProjects`/`listSessions`/`openSession`, everything this project needs —
-**shipped in 1.24.0** ("Extensions: Add third-party tools to web and desktop",
-`CHANGELOG.md`). `@openchamber/sdk` has no published version before
-`1.23.2-preview.1`; `1.24.0` is the first stable release. I decompiled your
-installed app's `app.asar` and renderer bundle: it has no `contributes`,
-`apiVersion`, or guest-frame plumbing at all, which matches "pre-SDK".
-
-Your app's own update check confirms it:
-
-```
-currentVersion: 1.22.0, available: 2.3.2
+```jsonc
+{
+  "openchamber": {
+    "apiVersion": 1,
+    "engines": { "openchamber": ">=1.24.0" },
+    "contributes": {
+      "panel": { "id": "kanban-board", "name": "Kanban", "icon": "task", "entry": "panel/index.html" },
+      "page": { "entry": "panel/page.html", "title": "Kanban board" },
+      "capabilities": ["sessions", "prompt"],
+      "service": { "entry": "service/main.js", "runtime": "host", "permissions": { "exec": ["git"] } }
+    }
+  }
+}
 ```
 
-**Nothing in this repo can be installed or tested until OpenChamber is
-updated to at least 1.24.0** (`Settings → Extensions` will not exist before
-that). I built, type-checked, and unit-tested everything below against the
-real `@openchamber/sdk@2.3.2` types and the SDK's own documented contract —
-but could not do the live, in-app verification Phase 1's acceptance criteria
-require, since your running app can't load it. Update the app, then see
-"Install and verify" below.
+| Capability | Used for |
+|---|---|
+| `sessions` | `listProjects`/`onProjects`, `listSessions`/`onSessions`, `listWorktrees`/`onWorktrees`, `startSession`, `openSession` — reading project/session/worktree state and creating or opening sessions. |
+| `prompt` | Permits `startSession` to send its `text` field as the agent's first message. The returned `sent` value is checked because session creation can succeed without the message being delivered. |
+| `service` (auto-added by declaring `contributes.service`) | The local git-branch-reading service, see below. |
 
-## SDK capabilities verified (from `@openchamber/sdk@2.3.2`, docs, and the
-`tasks-demo` reference example in `openchamber/openchamber`)
+**Capability approval is all-or-nothing.** The host's own grant endpoint (`PUT /api/guests/:id/capabilities`) accepts only the full requested list or `[]` — there is no partial grant. Installing this extension means accepting all three capabilities together; there is no way to get the Kanban board without also being asked about the local service.
 
-| Requirement | SDK support | Notes |
-|---|---|---|
-| Full-screen extension page | `contributes.page` | Opens from the sidebar's Extension pages menu only; the extension cannot open it itself. Requires `panel.entry` to also exist. |
-| Project listing/selection | `host.listProjects` / `host.onProjects` | Live snapshot, `{ id, name, directory }`. No capability prompt beyond `sessions`. |
-| Session creation & navigation | `host.startSession`, `host.openSession` | `openSession(id)` is the "explicit transition from a card to its chat" the docs call out by name — exactly `Open Chat`. |
-| Worktree creation/listing | `host.listWorktrees` / `host.onWorktrees`, `startSession({ worktree })` | `worktree: { kind: 'new', name?, baseBranch? }` creates one; `{ kind: 'existing', directory }` reuses one. This is Phase 3 scope. |
-| Session activity subscriptions | `host.onSessions(projectId, listener)` | Per-session `activity`: `idle/running/retrying/waiting-permission/waiting-question`, plus `outcome: 'completed'\|'failed'\|null`. The docs explicitly say *"Neither idle nor completed marks your task Done"* — matches the requirement that agent completion must never auto-close a task. |
-| Persistent extension storage | `host.storage.{get,set,delete,keys}` | Per-key JSON, 64 KiB/value, 2 MiB/2000 keys total. No extra capability needed. Survives reloads/restarts; removed on uninstall. |
-| Session-to-task linking | Not a dedicated API — modeled as data | We store `sessionId` on our own task record and call `host.openSession(sessionId)`. (`host.attach`/`sessionLink` exist for the chat-composer chip pattern, which is a different UX than ours and not needed for Phase 1.) |
-
-No capability beyond `sessions` was needed for Phase 1: no `prompt` (we don't
-send messages yet — that's Phase 2's `Start Agent`), no `files`, no `model`,
-no `shells`.
-
-## What's NOT yet confirmed (deferred, not assumed)
-
-- **Which exact OpenChamber version between 1.24.0 and 2.3.2 your eventual
-  update will land on**, and whether any patch in between changed a type
-  this code depends on. I pinned `@openchamber/sdk` to `2.3.2` (today's
-  latest) and set `engines.openchamber: ">=1.24.0"` from the changelog entry
-  that introduced the SDK; OpenChamber itself enforces that floor at install
-  and refuses older hosts.
-- Live behavior of `onSessions`/`onProjects`/drag-and-drop/storage limits —
-  code is unit-tested against the SDK's documented contract with a fake
-  `host.storage`/`host.onSessions`, not against a running app (see above).
-
-## File structure (Phase 1)
+## File structure
 
 ```
 openchamber-kanban/
-  package.json              # manifest (openchamber.contributes: panel + page), build/test scripts
+  package.json
   src/
     domain/
-      task.ts               # Task type, validation, createTask/applyPatch/parseTask (pure, no host)
-      board.ts               # column grouping, filtering, drag-and-drop rank math (pure)
-      sync.ts                # agent activity -> task status mapping (pure)
-      worktree.ts            # picker selection -> startSession worktree shape, and back (pure)
-      autoTask.ts            # orphan-running-session detection + title derivation (pure)
+      task.ts          # Task type, validation, createTask/applyPatch/parseTask — pure, no host
+      board.ts          # column grouping, filtering, drag-and-drop rank math, Review sort — pure
+      sync.ts            # agent activity → task status mapping — pure
+      worktree.ts         # worktree/branch picker logic, local service response parsing — pure
+      unlink.ts            # link health: whether a linked session/worktree provably still exists — pure
+      autoTask.ts          # orphan-session eligibility + initial status + title — pure
     store/
-      taskStore.ts           # one host.storage key per task: task:<id> → persisted Task
-      prefs.ts               # board filters + last-open task → host.storage key "prefs"
-      orphanWatermark.ts      # persisted "going forward" cutoff for auto-adopting sessions
+      taskStore.ts      # one host.storage key per task: task:<id>
+      prefs.ts            # board filters + last-open task: host.storage key "prefs"
+      orphanWatermark.ts    # "going forward" cutoff timestamp: host.storage key "orphan-watermark"
     host/
-      workspace.ts            # thin wrapper over host.listProjects/onProjects/onSessions/onWorktrees/openSession
-      sessionSync.ts           # live onSessions watcher -> task status changes, one sub per linked project
-      orphanSessions.ts        # live onProjects+onSessions watcher -> sessions with no task yet
-      branchService.ts         # calls the optional git-branch service, best-effort (null on any failure)
+      workspace.ts      # host.listProjects/onProjects/onSessions/onWorktrees/openSession wrappers
+      sessionSync.ts      # live onSessions watcher → status sync + deleted/archived session unlink
+      worktreeSync.ts       # live onWorktrees watcher → worktree-deleted unlinks
+      orphanSessions.ts     # live onProjects+onSessions watcher → sessions with no task yet
+      branchService.ts        # calls the local git-branch service; null on any failure
     ui/
-      dnd.ts                  # pure drop-target math (unit tested, no DOM)
-      styles.ts                # CSS using the host's --oc-* theme tokens
-      dom.ts                   # tiny element() helper
-      board.ts                 # composes everything into the Kanban board
-      detail.ts                # task detail dialog: save, delete, Start Agent, link/open session
-    page.ts                    # full-screen page entry (contributes.page)
-    panel.ts                   # rail panel entry: lightweight summary + badge
+      dnd.ts            # drop-target math — pure, no DOM
+      styles.ts           # CSS using the host's --oc-* theme tokens
+      dom.ts                # element() helper
+      board.ts               # the Kanban board
+      detail.ts                # task detail dialog
+    page.ts             # full-screen page entry (contributes.page)
+    panel.ts              # rail panel entry: summary + badge
     service/
-      main.ts                  # the local git-branch service's source (Node, not browser)
+      main.ts           # local git-branch service source (Node, not browser)
   panel/
-    index.html, page.html      # the two HTML shells the manifest points at
-    main.js, page.js           # esbuild IIFE output (checked in for folder installs)
+    index.html, page.html   # HTML shells
+    main.js, page.js          # esbuild IIFE output
   service/
-    main.js                    # esbuild Node/ESM output of src/service/main.ts (checked in)
-  test/                        # 47 node:test unit tests (domain, store, workspace, dnd, sync, worktree, autoTask)
-  scripts/build.mjs            # esbuild → IIFE, no Bun dependency
+    main.js             # esbuild Node/ESM output of src/service/main.ts
+  test/                 # node:test unit tests for domain/, store/, host/
+  scripts/build.mjs      # esbuild: browser IIFE for panel/page, Node/ESM for the service
 ```
 
-Layering: `domain/` has zero SDK or DOM imports (pure, fully unit-testable).
-`store/` and `host/` depend only on narrow `Pick<HostClient, …>` slices, so
-tests use plain in-memory fakes instead of mocking the whole SDK. `ui/`
-composes those into the page; it's the only layer that touches the DOM, and
-the only thing that changes between `page.ts` (full board) and `panel.ts`
-(summary) is which of these it mounts.
+Layering: `domain/` has no SDK or DOM imports — pure functions, fully unit-tested. `store/` and `host/` depend only on narrow `Pick<HostClient, …>` slices, tested with in-memory fakes. `ui/` is the only layer that touches the DOM.
 
-## Agent-status sync (a piece of Phase 2, pulled forward on request)
+## Task data model
 
-At your direction, task status now follows the linked session's live state,
-one direction at a time, implemented in `src/domain/sync.ts`
-(`statusForSession`, pure, 7 unit tests) and watched live by
-`src/host/sessionSync.ts` (`createSessionSync`, one `host.onSessions`
-subscription per distinct project among linked tasks, not one per task; 5
-unit tests):
+```ts
+type Task = {
+  schemaVersion: 1;
+  id: string;                 // t_<base36 time><6 random chars>
+  title: string;
+  description: string;        // first message requested for the agent; delivery is checked via result.sent
+  status: 'backlog' | 'todo' | 'in_progress' | 'review' | 'done';
+  rank: number;                // fractional, for drag-and-drop ordering within a column
+  projectId: string | null;
+  sourceBranch: string | null;  // unused by current UI; kept for backward compatibility with old records
+  worktree: { directory: string; branch: string | null } | null;
+  sessionId: string | null;
+  createdAt: number;
+  updatedAt: number;
+  needsAttentionSince: number | null;  // set when the Review marker/sort should treat this as unseen
+};
+```
 
-- Agent **running or retrying** → task moves to **In Progress**, from any
-  status except Done.
-- Agent **finishes a turn** (`activity: idle`, `outcome: completed`),
-  **asks a clarifying question** (`waiting-question`), hits a **permission
-  prompt** (`waiting-permission`), or a turn **fails** (`outcome: failed`) →
-  task moves to **Review**. All four were confirmed with you; permission
-  prompts and failures move it too (`DEFAULT_SYNC_OPTIONS`), configurable via
-  the `SyncOptions` the function already takes.
-- A task the user marked **Done is never moved** by this — Done stays a
-  deliberate, user-only action, matching the original "agent finishing a
-  turn must not mark Done" requirement. Nothing here writes `done` from
-  agent state; only the user's "Mark Done" button does.
+Stored one task per `host.storage` key (`task:<id>`), so editing one task can never corrupt another, and a malformed record is reported and skipped rather than blocking the rest of the board. Board filters, the currently-open task, and the "going forward" orphan-adoption cutoff are each a separate key (`prefs`, `orphan-watermark`).
 
-Clicking a card now reflects this directly:
+## The board
 
-- **Has a linked session** → the card click opens that chat immediately
-  (`host.openSession`), no popup in the way.
-- **No session yet** (a brand-new task) → the card click opens the detail
-  popup, since there's nothing to jump to yet.
-- Every card also has an explicit **Edit** button that always opens the
-  detail popup, session or not, for editing title/description/status/
-  project/branch or unlinking a session.
+Full-screen page (`contributes.page`) with a project filter, a search field, and five columns (Backlog, To Do, In Progress, Review, Done). The rail panel is a lightweight read-only summary (open-task count + badge) — the full board can only be opened from the sidebar's Extension pages menu, never from the extension itself.
 
-This still needs live verification against a running session (unit tests
-cover the pure mapping and the subscription lifecycle with a fake host, not
-a real OpenCode agent turn).
+- **Add task** is a single button. A click creates a real, persisted task immediately (title `"New task"`, appended to Backlog) and opens its detail popup for editing — no separate title field in the toolbar.
+- **Drag-and-drop** uses fractional ranks (`rankAtEnd`, `planDrop`), so moving a card only ever rewrites that card and, rarely, a few neighbors whose gap became too small — never the whole column.
+- **Every column has a "Move to" button** in the detail popup, one per status except the task's current one, alongside dragging.
+- **The Review column sorts by urgency**, not rank: whichever task most recently needs attention leads; already-seen tasks sink below and keep normal rank order among themselves. Every other column stays rank-ordered.
 
-## Start Agent (Phase 2's primary action, pulled forward)
+### The "needs attention" marker
 
-The task detail dialog now has a **Start Agent** section, shown only before
-a task has a linked session (once it has one, you get the existing
-Open Chat/Unlink controls instead). It mirrors the "Session directory"
-picker OpenChamber itself uses for new chats: **Project root**, **New
-worktree** (branch & worktree name — the SDK's `{ kind: 'new', name }` sets
-both together, there's no separate "folder name" to set independently —
-plus a **Based on** dropdown), or any of the project's existing worktrees
-(fetched live, non-`ready` ones disabled).
+A task that lands in Review through something other than your own action — the live agent-status sync or auto-adopting a running session — gets `needsAttentionSince` set to that moment, shown as a warning-colored left border on its card. It's cleared the moment you open the task (its chat, or its detail popup) or drag it anywhere yourself. A status change you make deliberately (dragging, or the detail popup's own "Move to Review") never sets the marker — only the two automatic paths do.
 
-**"Based on" now lists real branches, via an optional local service —
-re-examined after first concluding this was impossible.** Re-verifying by
-listing every method `HostClient` has confirmed again: there's no
-`listBranches` in the SDK. OpenChamber's own native "Based on" picker gets
-its list from `/api/vcs/branch` on the OpenCode server; a guest page's CSP
-locks its network to its own `/api/guests/<id>/` path, so it can never call
-that directly, confirmed by curling it. But the SDK has a sanctioned
-mechanism for exactly "things a page cannot reach": a declared
-**`contributes.service`** — the official `git-graph-status` example uses
-the identical pattern (`permissions.exec: ["git"]`) to read git history.
+## Agent-status sync
 
-This extension now ships one, added only after confirming with you first,
-since it's a real security-posture change (an unsandboxed local process):
+Implemented in `src/domain/sync.ts` (`statusForSession`, pure) and watched live by `src/host/sessionSync.ts` (`createSessionSync`, one `host.onSessions` subscription per project among currently-linked tasks):
 
-- `src/service/main.ts` → built to `service/main.js` (Node/ESM target, not
-  the browser build) — a tiny HTTP server the host spawns and proxies to.
-  Every request is bearer-authenticated by the host itself; the panel
-  never sees the token or dials the port directly (`GUEST_SERVICES.md`'s
-  own model). The **only** command it ever runs is read-only:
-  `git -C <directory> for-each-ref --sort=-committerdate --count=200
-  --format=%(refname) refs/heads refs/remotes` — most-recently-active
-  branches first, capped at 200 (same cap `git-graph-status` uses; this was
-  verified live against a real repository with several thousand branches,
-  so the cap is not theoretical), for the specific project directory the
-  panel asks about (`path.isAbsolute` checked; nothing else is ever executed).
-- `src/host/branchService.ts` (`fetchServiceBranches`) calls it via
-  `host.serviceRequest` and is **best-effort by design**: `NO_SERVICE` (not
-  approved, not running), `SERVICE_FAILED`, a bad answer, or any other
-  error all collapse to `null`, never an exception the UI has to handle —
-  because the complete, working fallback below still exists.
-- Verified end to end against a real large repository, not just unit
-  tests: the service's answer correctly included the exact branch the
-  user had selected in OpenChamber's own native dialog at the time.
+| Session activity / outcome | Task moves to |
+|---|---|
+| `running`, `retrying` | In Progress (from any status except Done) |
+| `waiting-question` | Review |
+| `waiting-permission` | Review |
+| `idle` + outcome `completed` | Review |
+| `idle` + outcome `failed` | Review |
+| anything else | no change |
 
-**The fallback below is kept, not replaced**, for when the service isn't
-approved, isn't running, or isn't supported at all (VS Code, mobile): the
-dropdown offers "Use project default", every distinct branch already
-backing one of the project's worktrees (`buildBaseBranchOptions`, pure,
-tested), and "Custom branch…" for anything else. **Most projects have no
-existing worktree yet**, which means this fallback commonly has *zero*
-real branches to offer on its own — exactly what first read as "it's not
-showing branches." `hasKnownBranches` (pure, tested) detects that case
-(service-informed when the service answered, worktree-informed otherwise)
-and defaults the field straight to "Custom branch…" with its text field
-already visible, instead of making you discover an empty dropdown first.
-Once you've touched "Based on" yourself, the auto-switch stops overriding
-your choice.
+A task marked **Done is never moved** by this — only your own "Mark Done" ever sets it. A save failure here doesn't retry on every subsequent snapshot (a live session's `onSessions` snapshot fires continuously while it runs): `lastAttemptedStatus` tracks the status this mount last attempted for a task, and only a genuinely different target status is retried, cleared on `Refresh`/reopen.
 
-**Reinstalling adds a new approval item: "Run a local service."** The
-dialog says plainly that a service runs with your full user access —
-Phase 1 of the service contract doesn't sandbox it, by design (that's the
-whole point of a service existing at all). This one only ever runs
-`git for-each-ref` for a project directory already in your registered
-project list; it never writes, never touches history, and never runs
-anything else.
+## Automatic unlinking
+
+A task's links must not outlive what they point at. When a session is deleted or archived, or a worktree deleted (all from OpenChamber's sidebar), the corresponding link is cleared from the task automatically — `sessionId` for a session, `worktree` for a worktree. The task itself is kept, with its title, column, and description untouched; it simply becomes a plain unstarted card again, so **Start Agent** or **Link an existing session** can be used on it fresh. The status is deliberately left alone too — moving or archiving a card's session is not a status change.
+
+Two mechanisms cover it, because a page-type extension only runs while it is the selected view:
+
+- **Live** — `src/host/sessionSync.ts` reports a gone session on its existing `onSessions` subscription (no extra subscription); `src/host/worktreeSync.ts` does the same for worktrees via one `onWorktrees` subscription per project holding worktree-linked tasks. `src/domain/unlink.ts` (`sessionLinkState`, `worktreeLinkState`) decides: an archived session (`archivedAt`) is gone; an absent one is gone only when the snapshot finished loading (`state: 'ready'`) and, for the directory the session was last seen in, the per-directory `coverage` finished too. Anything less is `unknown`, and **unknown never unlinks** — an incomplete list is not a disappearance, and a false "gone" would lose the link permanently and let the orphan watcher re-adopt the session as a duplicate card.
+- **On every load** — `reconcileLinks` in `src/ui/board.ts` runs at the end of every `reload()`, before the orphan watcher starts: for each project holding linked tasks it fetches the current sessions and worktrees once (`fetchSessions`, which drops archived sessions, and `fetchWorktrees`) and clears every link that provably no longer resolves. This is what catches the common case — deleting or archiving in the sidebar while the board is closed, where no live watcher was running. It runs before orphan adoption starts so a session whose stale link is being dropped can never also be re-adopted as a duplicate task.
+
+Unlinking shows a toast naming the task. On a load-time pass it is one summary toast instead of one per task. A save failure falls back to a full reload, which re-loads the still-linked task and lets the next pass retry.
+
+## Auto-adopting a session with no task
+
+A session with no task pointed at it, created at or after a persisted watermark timestamp, becomes a new task automatically — In Progress while running, Review once it needs attention (question, permission prompt, finished, or failed) — using the same `statusForSession`-derived mapping (`initialStatusForNewSession` in `src/domain/autoTask.ts`), linked to that session, titled from the session's own title (or `"New session in <project>"`/`"New session (<short id>)"` when the host's own id-as-title fallback would otherwise show a raw session id).
+
+- `src/host/orphanSessions.ts` (`watchOrphanSessions`) is a live reporter: one `onSessions` subscription per registered project, reporting every structurally-adoptable session (not a subagent, not archived, not already linked) with a resolvable status, on every snapshot. Sidebar-created sessions are therefore adopted while the board is open and are also found on the next board load if they were created while it was closed.
+- `src/store/orphanWatermark.ts` holds the single cutoff: set once, the first time this feature ever runs, to that moment, and never moved again. Every session's real `createdAt` is compared against it on every board load — this is the only design that works for a page-type extension, since a page only runs while it's the selected main view, and detection cannot happen while you're in a different chat.
+- `attemptedSessions` in `board.ts` guards against retrying a failed adoption on every snapshot tick, cleared on `Refresh`/reopen.
+- `startingAgents` temporarily pauses adoption while a task's `startSession` request is in flight. The host can publish the new session before that request returns its id; once returned, the id is claimed and the originating task is saved with the link before navigation. A final same-session check removes any duplicate card already linked to that session.
+- Subagents and archived sessions are never adopted. A toast announces each adoption.
+
+## Start Agent
+
+Shown in the task detail popup until a session is linked (after that, Open Chat/Unlink instead). Requires a title, description, and project; disabled with an inline reason otherwise, re-evaluated live.
+
+**Start from** is a radio choice:
+- **Project root** — run directly in the main checkout, no worktree.
+- **New branch** — a fresh branch and worktree, based on the branch picked in **Based on**. Shows **Branch name** and a read-only **Folder name** that always mirrors it: `startSession`'s `{ kind: 'new', name, baseBranch }` has one `name` for both, with no way to set a folder name independently.
+- **Existing worktree** — reuse a worktree already checked out (`listWorktrees`). Not the same as "check out any branch that doesn't have a worktree yet" — the SDK has no such mode, only `{ kind: 'existing', directory }` for a worktree that already exists on disk.
+
+**Based on** is a searchable dropdown (`searchable: true`), populated from the local git-branch service when available, or the project's existing worktree branches plus "Use project default" otherwise. A new branch can't be based on itself (`branchNameConflictsWithBase`) — checked before the request is ever sent.
 
 Clicking **Start Agent**:
+1. Passes the title, description, and project currently shown in the dialog, including edits not yet saved with **Save changes**. The description becomes `text`; the current values are also saved to the task as part of the session-link update.
+2. The session title uses the task title. If the title is still the default `"New task"`, `sessionTitleForTask` uses the first line of the description instead. This avoids giving a new session the generic task placeholder as its name.
+3. Builds the `worktree` value (`buildSessionWorktree`) and calls `host.startSession` with `navigation: 'preserve'`. Adoption is paused during that request because the host can publish the new session before the request returns its id.
+4. When a session id returns, it is claimed in `attemptedSessions`, and the existing task is saved with that id, the latest title and description, the project, In Progress status, and its worktree. The save retries three times with backoff (`saveTaskRetrying`). A same-session check removes an already-created duplicate task if one exists.
+5. Checks `result.sent`. If the session was created but the description was not sent (`no-model`, `skipped`, or `failed`), the board shows an error toast. The description remains saved on the task; the SDK has no call to send a message to an arbitrary existing session afterward.
+6. Clears the saved open-task preference and waits for that storage write to finish before calling `host.openSession(result.sessionId)`. The dialog therefore does not reopen when the user returns to the board.
+7. On failure (`sessionId: null`), surfaces the host's own failure reason and keeps the worktree's directory in the message rather than deleting anything.
 
-1. Builds the `worktree` value `host.startSession` expects from that picker
-   (`buildSessionWorktree`, pure, tested).
-2. Calls `host.startSession` with the task's **description as the first
-   message** (falls back to the title if the description is empty),
-   `navigation: 'open'` so it switches straight into the new chat — this is
-   the "opens a new chat panel for the description" behavior you asked for.
-3. On success, saves the returned `sessionId` and worktree info onto the
-   task (`resolveTaskWorktree`, pure, tested) and sets it **In Progress**.
-4. On failure (`sessionId: null`), surfaces the host's `failure` reason and
-   the worktree directory it kept, rather than silently retrying or
-   deleting anything — matching "do not delete worktrees without explicit
-   confirmation."
+## The local git-branch service
 
-This needed a new capability: **`prompt`**, because `startSession` with a
-`text` first message is gated on it (`sessions` alone only covers listing
-and creating sessions without a message). Reinstalling the extension will
-ask you to approve it.
+Declared via `contributes.service` with `permissions.exec: ["git"]` — the only way to list a repository's real branches, since the SDK itself has no API for this (confirmed by enumerating every `HostClient` method).
 
-Never automatic, never silent: creating a worktree, running an agent, and
-spending tokens all happen only from your explicit click here.
+- `src/service/main.ts`, built to `service/main.js` (Node/ESM target, not the browser build) — a small HTTP server the host spawns and proxies to on `127.0.0.1`. Every request is bearer-authenticated by the host itself; the panel never sees the token or dials the port directly.
+- Runs **exactly one command**: `git -C <directory> for-each-ref --sort=-committerdate --count=200 --format=%(refname) refs/heads refs/remotes` — read-only, most-recently-active branches first, capped at 200, for a project directory the panel already knows about (`path.isAbsolute` checked).
+- `src/host/branchService.ts` (`fetchServiceBranches`) is best-effort: not approved, not running, a bad answer, or any other error all become `null`, never an exception the UI has to handle, because the worktree-derived fallback is a complete, working option on its own.
 
-## Auto-adopting a session with no task — going forward only
+## Known SDK limitations
 
-If a session with no task pointed at it was created **after this feature's
-first-ever use**, a task is created for it automatically, in whichever
-column its current activity implies — **In Progress** while it's running,
-**Review** once it needs you (a question, a permission prompt, or it
-already finished) — linked to that session, with the session's own title.
-Sessions that existed **before then** are never touched, exactly as
-directed: "don't do for previous sessions, but for going forward this
-should happen."
+- **No API to list a repository's full branch set**, only `GuestWorktree.branch` per existing worktree, or the local service above.
+- **Capability approval is all-or-nothing** across the whole manifest (see above) — there's also no cross-extension service API, so a capability can't be split into its own, separately-optional package either.
+- **Chats are invisible.** A chat (a session with no project) is explicitly documented as outside any project; the `sessions` capability's methods are all scoped to registered projects. There is no SDK method to list or watch chats at all.
+- **Session auto-adoption runs only while the Kanban page is active**, plus the next time it opens. A session started from the sidebar while the board is active is adopted live; one started while the board is closed is found when the board opens again, if it meets the watermark and activity rules. A session started from a task is linked directly to its existing task instead of being adopted as another task.
+- **No way to set a worktree's folder name independently of its branch name** — `startSession`'s `{ kind: 'new', name }` sets both together.
+- **OpenChamber's own worktree-creation can fail with "Remote branch not found" for a branch confirmed to exist on the remote and already fetched locally.** When `host.startSession` rejects for a new-branch request, the real reason doesn't survive the trip back to the extension — only a generic failure does — so the error shown names the base branch involved and suggests this is a known possibility, not a claim that the branch name is wrong.
 
-**This went through a real revision.** The first version kept its "already
-existed" baseline only in memory, captured from the first `onSessions`
-snapshot the board's watcher happened to see after the page opened. That
-doesn't actually work: starting a session is itself a navigation in
-OpenChamber, and a full-screen guest page is "mutually exclusive with other
-main pages" — so if the Kanban page was open and you started a session
-(anywhere), that very action closes Kanban's page before the watcher can
-see anything. You hit exactly this: a session started in Studio produced
-no task, because the page watching for it had already been closed by the
-act of starting that session, and even if it hadn't, a freshly-reopened
-page would have treated an already-existing session as "old" again.
+## Install and verify
 
-The fix: the "going forward" cutoff is a **persisted timestamp**
-(`src/store/orphanWatermark.ts`, one `host.storage` key, 3 tests), set once
-— the first time this feature ever runs, to that moment — and never moved
-again. Every session's real `createdAt` (from the host's own session
-record, not anything we timestamp ourselves) is compared against that
-saved value, every time the board loads, regardless of whether anything
-was open in between. This is the only design that can work for a page-type
-extension: detection cannot happen in real time while you're in a different
-chat, only by catching up the next time the board is reopened.
-
-- `isAdoptable` / `initialStatusForNewSession` (pure, `src/domain/autoTask.ts`,
-  7 tests) decide *what* qualifies and *which* column. The status mapping
-  reuses `statusForSession('backlog', …)` from the agent-status sync above,
-  so there's exactly one place that encodes "what does this activity mean."
-- `watchOrphanSessions` (`src/host/orphanSessions.ts`, 5 tests) is now a
-  simple live reporter — one `onSessions` subscription per registered
-  project, reporting every structurally-adoptable session (not a subagent,
-  not archived, not already linked) with a resolvable status, on every
-  snapshot. It carries no "going forward" logic itself.
-- `board.ts` decides eligibility: loads the watermark on every `reload()`
-  (setting it, once, if this is the very first run), and only acts on a
-  reported session when `session.createdAt >= orphanWatermark`.
-
-A toast announces each adoption so it's never a silent surprise. **The
-auto-generated title is never the raw session id**, even though the host
-itself falls back to using the id as `title` until OpenCode generates a
-real one from the conversation — `titleForOrphanSession` treats that
-id-as-title fallback the same as an empty title, and names the task
-`New session in <project>` instead (or `New session (<short id>)` if the
-project name isn't known), so you're never shown something like
-`ses_43894...` as a task title.
-**Retry safety carries over unchanged:** `attemptedSessions` marks a
-session as tried, success or failure, for the rest of this mount — a save
-failure doesn't retry on every snapshot tick, only on the next
-`Refresh`/reopen. The same applies to the agent-status sync
-(`lastAttemptedStatus`): a failing write isn't retried for the same target
-status, only once the agent moves to a genuinely different one. Both exist
-because a real storage failure (pending capability approval) once turned
-into a repeated-error-toast loop before this guard was added.
-
-**Residual limitation, stated plainly:** a session created in the very
-same window/tab where Kanban was the active view, by an action that
-switches that view away (starting a chat normally does), can only be
-picked up the *next time you reopen the Kanban board* — never while you're
-still in that other chat. A session started from another window, another
-device, a schedule, or anything that doesn't navigate this window's main
-view is caught live. There is no SDK-supported way around the first case:
-a page only runs while it's the selected main view, and nothing short of a
-`service` (a separate, unsandboxed local process — the brief's own bar for
-when that's justified isn't met here) could watch continuously regardless
-of what's on screen.
-
-**Another hard limitation: Chats are entirely invisible to this feature.**
-OpenChamber's docs are explicit that a chat is *"a plain conversation with
-the agent, outside any project"* — its own empty folder, no git status, no
-branches or worktrees, and it *"never shows up in In work."* The `sessions`
-capability's methods (`listProjects`, `onSessions`, `listSessions`) are all
-scoped to *registered projects* — there is no SDK method to list or watch
-chats as a category at all, nothing like `onChats()`. So a chat can never
-be auto-adopted, can never appear in "link an existing session" (also
-project-scoped), and can never be a Start Agent target. This isn't a gap I
-could close with more code — the SDK gives this extension no way to
-observe a chat's existence, let alone its activity.
-
-## "Needs your attention" marker on Review cards
-
-A card that landed in Review by something you didn't do yourself — the
-live agent-status sync, or auto-adopting a running session — gets a
-visible warning-coloured left border until you actually look at it. Opening
-it (its chat, via a card click; its detail popup, via Edit or a
-session-less card) clears the marker; so does a manual drag, since moving
-a card yourself is itself an acknowledgment. A status change *you* make
-(dragging it, or the detail popup's own "Move to Review") never sets the
-marker in the first place — only the two automatic paths do.
-
-Stored as `Task.needsAttentionSince: number | null`, added without a
-schema version bump: it's optional and backward-compatible by
-construction (`parseTask` treats an absent field — any task saved before
-today — as `null`, not corrupt), so nothing already on your board becomes
-unreadable. 4 new/updated tests in `test/domain.test.ts` cover the
-backward-compatibility case directly. The wiring itself (board.ts) isn't
-unit-tested, consistent with the rest of this project's layering — only
-`domain/`/`store/`/`host/` are.
-
-**The Review column sorts by this**, not by drag rank: whatever most
-recently needs you leads, newest first; already-reviewed tasks sink below
-and keep normal rank order among themselves (`byReviewUrgency`, pure,
-tested; every other column is unaffected). One real UX tradeoff worth
-naming: dragging to manually reorder *within* Review has reduced effect,
-since the next render re-sorts by urgency anyway — dragging a card *into*
-or *out of* Review (changing its status) still works exactly as before,
-since that's the primary interaction this column is for.
-
-## Bug fix: a race could create two cards for one session
-
-Starting an agent (or linking an existing session) saves the link back
-onto the task *after* the session already exists and is likely already
-running. In the gap between those two steps, the live orphan-session
-watcher could see that same session as unlinked and adopt it as a second,
-duplicate task — worse, permanently, if that save then failed outright
-(a real session, started and billing tokens, with no record of it
-anywhere). This is almost certainly what produced two cards for one
-agent run, one in Review and one stuck in Backlog: the duplicate came from
-auto-adopt (landing wherever the session's activity was by the time it
-fired), while the original task's own link-save never completed.
-
-Fixed by claiming the session id in `attemptedSessions` — the same guard
-the orphan watcher already checks — the instant `startSession` returns a
-real id or an existing session is deliberately linked, before the save
-even starts, so the orphan watcher can never adopt it independently. The
-save itself now retries three times with backoff (`saveTaskRetrying`)
-rather than giving up on the first transient failure, since by that point
-losing the link is strictly worse than a few retries: the session is
-real, already running, and the user explicitly asked for exactly one.
-
-## Bug fix: Save button stayed disabled
-
-Typing in any field set an internal `dirty` flag but never told the Save
-button to re-enable (`save.update({ disabled: false })` was missing from
-every field's `onChange`, and from the "Move to Review"/"Mark Done" quick
-actions recomputing `dirty` afterwards). Fixed by routing every field
-through one `markDirty()` helper that updates both.
-
-## Design decisions worth flagging
-
-- **Rail panel vs. full-screen page.** The brief's primary surface is the
-  full-screen board, and the docs are explicit that pages can only be opened
-  from the Extension pages menu, never by the extension itself. So the rail
-  panel is a lightweight read-only summary (open-task count + badge) rather
-  than a second copy of the five-column board, which wouldn't fit a sidebar
-  rail anyway.
-- **"Link an existing session" is just data, not an SDK call.** There's no
-  `linkSession` API; we store `sessionId` on the task record ourselves and
-  call `host.openSession(sessionId)` for "Open Chat". `host.attach` /
-  `sessionLink` write a chip onto the *chat composer*, which is a different,
-  unrelated feature (dropping a reference into chat) — using it here would
-  misuse an API designed for something else.
-- **Create-task flow persists immediately.** A one-field "New task" + Add
-  button creates and saves a real task right away (matching the acceptance
-  test: "create three tasks and reload — all three persist"), then opens the
-  detail dialog for description/project/branch. No "draft" task exists only
-  in memory to be silently lost.
-- **Drag-and-drop uses fractional ranks**, not array reindexing, so moving
-  one card only ever rewrites that card plus (rarely) a few neighbors whose
-  gap got too small — not the whole column.
-- **Agent status is never read as task status.** The board has no code path
-  that writes `status: 'done'` from `activity`/`outcome`; only the user's own
-  "Mark Done" button does. `Start Agent`/live activity badges are Phase 2.
-
-## Install and verify (requires OpenChamber ≥1.24.0)
-
-```
+```bash
+git clone <this repository>
 cd openchamber-kanban
 npm install
 npm run check   # typecheck + unit tests + build panel/main.js, panel/page.js, service/main.js
 ```
 
-Then in OpenChamber: **Settings → Extensions → Add** → paste the absolute
-path to this folder on your machine → approve the requested capabilities
-(`sessions`, `prompt`, and the local git-branch service) → open **Kanban**
-from the Extension pages menu above the session list.
+In OpenChamber: **Settings → Extensions → Add** → paste this folder's absolute path → approve `sessions`, `prompt`, and the local service → open **Kanban** from the Extension pages menu above the session list.
 
-Acceptance scenarios to walk through live once installed (Phase 1 subset):
+Acceptance scenarios:
 
-1. Create 3 tasks, reload OpenChamber → all 3 persist (`task:<id>` keys).
-2. Drag a task Todo → In Progress → reload → status persisted.
-3. Link an existing session to a task → **Open Chat** → the real session
-   opens via `host.openSession`.
-4. Return to the board (reopen the page) → project filter, search, and the
-   previously-open task detail restore from the `prefs` key.
+1. Create three tasks, reload OpenChamber → all three persist.
+2. Drag a task between columns, reload → the new status persists.
+3. Link an existing session to a task → **Open Chat** → the real session opens via `host.openSession`.
+4. Edit a task title and description without clicking **Save changes**, then start an agent → the current values are saved, the description is sent when OpenChamber reports success, the same task links to the session, and the task moves to In Progress.
+5. Run two tasks concurrently → they never share a session id.
+6. An agent finishes a turn → the task moves to Review, never to Done, until marked Done by hand.
+7. Start a session from the OpenChamber sidebar → one new task appears for it, in the column its activity implies.
+8. Start an agent from a task → only the originating task is linked to that session; no second task is adopted for the same session.

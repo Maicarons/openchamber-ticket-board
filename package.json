@@ -1,6 +1,6 @@
 {
   "name": "openchamber-kanban",
-  "version": "0.6.1",
+  "version": "0.11.0",
   "private": true,
   "description": "Local-first Kanban board for OpenChamber that links tasks to real OpenCode sessions.",
   "license": "MIT",

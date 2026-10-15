@@ -1,16 +1,18 @@
 import type { GuestProject, HostClient } from '@openchamber/sdk';
-import { mountBanner, mountButton, mountSearchField, mountSelect, mountSpinner, mountTextField } from '@openchamber/sdk/ui';
-import { applyPatch, createTask, STATUSES, STATUS_LABELS, type Task, type TaskStatus } from '../domain/task.ts';
+import { mountBanner, mountButton, mountSearchField, mountSelect, mountSpinner } from '@openchamber/sdk/ui';
+import { applyPatch, createTask, DEFAULT_TASK_TITLE, STATUSES, STATUS_LABELS, type Task, type TaskPatch, type TaskStatus } from '../domain/task.ts';
 import { ALL_PROJECTS, NO_PROJECT, groupColumns, planDrop, rankAtEnd, type BoardFilter } from '../domain/board.ts';
 import { deleteTask, loadTasks, saveTask } from '../store/taskStore.ts';
 import { loadPrefs, savePrefs, type Prefs } from '../store/prefs.ts';
 import { loadOrphanWatermark, saveOrphanWatermark } from '../store/orphanWatermark.ts';
-import { describeHostError, fetchSessions, fetchWorktrees, watchProjects } from '../host/workspace.ts';
+import { describeHostError, describeStartSessionDelivery, fetchSessions, fetchWorktrees, watchProjects } from '../host/workspace.ts';
 import { fetchServiceBranches } from '../host/branchService.ts';
 import { createSessionSync } from '../host/sessionSync.ts';
+import { createWorktreeSync } from '../host/worktreeSync.ts';
 import { watchOrphanSessions } from '../host/orphanSessions.ts';
 import { DEFAULT_SYNC_OPTIONS } from '../domain/sync.ts';
-import { titleForOrphanSession } from '../domain/autoTask.ts';
+import { sessionLinkState, worktreeLinkState, type SessionsView, type WorktreesView } from '../domain/unlink.ts';
+import { sessionTitleForTask, titleForOrphanSession } from '../domain/autoTask.ts';
 import { buildBaseBranchOptions, describeWorktreeOption, hasKnownBranches, resolveTaskWorktree } from '../domain/worktree.ts';
 import { mountTaskDetail } from './detail.ts';
 import { injectStyles } from './styles.ts';
@@ -48,12 +50,6 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
   const refresh = mountButton(toolbar, { label: 'Refresh', variant: 'ghost', onClick: () => { void reload(); } });
 
   const addRow = el('div', 'kb-row'); page.append(addRow);
-  const titleWrap = el('div', 'grow kb-add-task'); addRow.append(titleWrap);
-  let newTitle = '';
-  const newField = mountTextField(titleWrap, {
-    label: 'New task', value: '', placeholder: 'What needs doing?',
-    onChange: (value) => { newTitle = value; newField.update({ value }); },
-  });
   const bannerSlot = el('div'); page.append(bannerSlot);
   bannerSlot.hidden = true;
   const banner = mountBanner(bannerSlot, { tone: 'error', title: '' });
@@ -63,20 +59,21 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
   const clearBanner = () => { bannerSlot.hidden = true; };
   const notify = (error: unknown) => showBanner('Something went wrong', describeHostError(error));
 
+  // No title field here on purpose: a click creates a real, persisted task right
+  // away (title "New task", editable immediately in the popup that opens for it),
+  // instead of asking for a title before there's anything to attach it to.
   const add = mountButton(addRow, {
     label: 'Add task',
     onClick: () => {
       void (async () => {
         try {
-          const column = filter.projectId === ALL_PROJECTS || filter.projectId === NO_PROJECT ? 'backlog' : 'backlog';
           const task = createTask(
-            { title: newTitle, projectId: filter.projectId === ALL_PROJECTS || filter.projectId === NO_PROJECT ? null : filter.projectId },
-            rankAtEnd(tasks, column as TaskStatus),
+            { title: DEFAULT_TASK_TITLE, projectId: filter.projectId === ALL_PROJECTS || filter.projectId === NO_PROJECT ? null : filter.projectId },
+            rankAtEnd(tasks, 'backlog'),
           );
           add.update({ loading: true });
           await saveTask(host, task);
           setTasks([...tasks, task]);
-          newTitle = ''; newField.update({ value: '' });
           clearBanner();
           render();
           openDetail(task.id);
@@ -96,12 +93,12 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
   let detail: { dispose: () => void } | null = null;
   let draggingId: string | null = null;
   let disposed = false;
-  let leavingForChat = false;
 
-  /** The one place `tasks` changes, so the session-status watcher always sees the current set. */
+  /** The one place `tasks` changes, so the session/worktree watchers always see the current set. */
   const setTasks = (next: Task[]) => {
     tasks = next;
     sessionSync.sync(tasks);
+    worktreeSync.sync(tasks);
   };
 
   /**
@@ -127,7 +124,46 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
     void saveTask(host, updated).catch((error) => { notify(error); void reload(); });
   };
 
-  const sessionSync = createSessionSync(host, SYNC_OPTIONS, applyAgentStatusChange);
+  /**
+   * Clears one link on a task (its session, or its worktree) after the thing
+   * it points at was deleted or archived on the host. The state and save are
+   * unconditional — the caller checked the guard — but every caller updates
+   * its own state synchronously first, so a repeated report is a no-op.
+   * `message` null means stay quiet (reconciliation reports one summary
+   * instead of one toast per task).
+   */
+  const clearTaskLink = (taskId: string, patch: TaskPatch, message: string | null): boolean => {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return false;
+    const updated = applyPatch(task, patch);
+    setTasks(tasks.map((t) => (t.id === taskId ? updated : t)));
+    render();
+    void saveTask(host, updated)
+      .then(() => { if (message) void host.toast({ kind: 'info', message }).catch(() => undefined); })
+      .catch((error) => { notify(error); void reload(); });
+    return true;
+  };
+
+  /**
+   * A task's linked session was deleted or archived from the sidebar. The
+   * link must not outlive the session: without this the card keeps claiming
+   * a session that "Open Chat" can no longer open.
+   */
+  const onSessionGone = (taskId: string, sessionId: string) => {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task || task.sessionId !== sessionId) return;
+    clearTaskLink(taskId, { sessionId: null }, `Unlinked "${task.title}" — its session was deleted or archived.`);
+  };
+
+  /** A task's worktree was deleted from the sidebar; the recorded worktree no longer points anywhere. */
+  const onWorktreeGone = (taskId: string) => {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task || !task.worktree) return;
+    clearTaskLink(taskId, { worktree: null }, `Cleared the worktree link on "${task.title}" — that worktree was deleted.`);
+  };
+
+  const sessionSync = createSessionSync(host, SYNC_OPTIONS, applyAgentStatusChange, onSessionGone);
+  const worktreeSync = createWorktreeSync(host, onWorktreeGone);
 
   const linkedSessionIds = () => new Set(tasks.filter((t) => t.sessionId).map((t) => t.sessionId as string));
   /**
@@ -139,6 +175,21 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
    * `Refresh`/reopen gets a clean slate via `reload()` below.
    */
   let attemptedSessions = new Set<string>();
+
+  /**
+   * How many `startSession` calls (for any task) are currently in flight.
+   * While this is above zero, adoption is paused — not just guarded by
+   * `attemptedSessions`, which can only be populated *after* `startSession`
+   * resolves with the session's id. The host can report the session it is
+   * in the middle of creating to this mount's own live orphan watcher
+   * before that promise resolves, so without this, a session this very
+   * call is about to claim as its own task's link can be adopted as a
+   * second, duplicate task first. Decremented the moment the id is known
+   * and claimed in `attemptedSessions`, not held for the whole call, so a
+   * genuinely unrelated orphan elsewhere is paused for as little as
+   * possible.
+   */
+  let startingAgents = 0;
 
   /**
    * Retries a critical link-save a few times before giving up. Used only
@@ -176,7 +227,7 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
    * this feature's first use) are left alone, by design.
    */
   const adoptRunningSession = (projectId: string, session: { id: string; title: string; createdAt: number }, status: TaskStatus) => {
-    if (disposed || attemptedSessions.has(session.id) || linkedSessionIds().has(session.id)) return;
+    if (disposed || startingAgents > 0 || attemptedSessions.has(session.id) || linkedSessionIds().has(session.id)) return;
     if (session.createdAt < orphanWatermark) return;
     attemptedSessions.add(session.id);
     void (async () => {
@@ -220,15 +271,22 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
     },
   });
 
-  const persistOpenTask = (id: string | null) => {
+  /**
+   * Returns the save's promise — most callers fire-and-forget it (`void`),
+   * but the two navigate-away paths below must await it: `host.openSession`
+   * can tear this page down as part of the same call, before a
+   * fire-and-forget write to storage has actually reached the host, which
+   * would leave the old value persisted and this task reopening the next
+   * time the board loads.
+   */
+  const persistOpenTask = (id: string | null): Promise<void> => {
     prefs = { ...prefs, openTaskId: id };
-    void savePrefs(host, prefs).catch(() => undefined);
+    return savePrefs(host, prefs).catch(() => undefined);
   };
 
   const closeDetail = () => {
     detail?.dispose(); detail = null;
-    if (!leavingForChat) persistOpenTask(null);
-    leavingForChat = false;
+    void persistOpenTask(null);
   };
 
   /** Opening a task — its chat or its detail popup — is what "reviewed" means; clear any unseen marker. */
@@ -246,7 +304,7 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
     markReviewed(found);
     const task = tasks.find((t) => t.id === id) ?? found;
     detail?.dispose();
-    persistOpenTask(id);
+    void persistOpenTask(id);
     detail = mountTaskDetail(root, {
       task,
       projects: projects.map((p) => ({ id: p.id, name: p.name })),
@@ -266,15 +324,25 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
         render();
       },
       onOpenChat: async (sessionId) => {
-        leavingForChat = true;
+        // Awaited, not fire-and-forget, and before navigating away — `host.openSession`
+        // can tear this page down as part of the same call, before a fire-and-forget
+        // write actually reaches the host, which would leave the old value persisted
+        // and this task reopening the next time the board loads.
+        await persistOpenTask(null);
         await host.openSession(sessionId);
         closeDetail();
       },
-      onLinkSession: async (sessionId) => {
+      onLinkSession: async (sessionId, sessionProjectId) => {
         // Claimed immediately, before the save, so the orphan watcher never adopts this
         // session as a second task even if the save below is slow or ultimately fails.
+        // The project is stored too: without it, neither the live status/unlink watchers
+        // nor reconciliation can cover a task linked this way.
         attemptedSessions.add(sessionId);
-        const updated = applyPatch(task, { sessionId, status: task.status === 'backlog' ? 'todo' : task.status });
+        const updated = applyPatch(task, {
+          sessionId,
+          ...(sessionProjectId ? { projectId: sessionProjectId } : {}),
+          status: task.status === 'backlog' ? 'todo' : task.status,
+        });
         await saveTaskRetrying(updated);
         setTasks(tasks.map((t) => (t.id === task.id ? updated : t)));
         render();
@@ -295,9 +363,10 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
       },
       loadWorktreeInfo: async (projectId) => {
         const result = await fetchWorktrees(host, projectId);
-        // The optional git-branch service gives the real repository branch list, same as
-        // OpenChamber's own "New Worktree" dialog; falls back to worktree-derived branches
-        // (silently — see fetchServiceBranches) when it's not approved, running, or supported.
+        // The local git-branch service gives the real repository branch list, same
+        // as OpenChamber's own "New Worktree" dialog; falls back to worktree-derived
+        // branches (silently — see fetchServiceBranches) when it's not approved,
+        // running, or supported on this platform.
         const directory = projects.find((p) => p.id === projectId)?.directory ?? null;
         const serviceBranches = directory ? await fetchServiceBranches(host, directory) : null;
         return {
@@ -306,35 +375,99 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
           hasKnownBranches: serviceBranches ? serviceBranches.length > 2 : hasKnownBranches(result.worktrees),
         };
       },
-      onStartAgent: async ({ projectId, worktree }) => {
-        const text = task.description.trim() || task.title;
-        const result = await host.startSession({
-          providerId: EXTENSION_ID,
-          id: task.id,
-          title: task.title,
-          url: taskUrl(task.id),
-          text,
-          projectId,
-          worktree,
-          navigation: 'open',
-        });
+      onStartAgent: async ({ projectId, worktree, title, description }) => {
+        const text = description.trim() || title;
+        let result;
+        // Paused for exactly this long: the host can report the session it is in the
+        // middle of creating to this mount's own live orphan watcher before this very
+        // call resolves with its id — before the code below gets a chance to claim it
+        // as this task's own link, not a second, unrelated one. See `startingAgents`.
+        startingAgents += 1;
+        try {
+          try {
+            result = await host.startSession({
+              providerId: EXTENSION_ID,
+              id: task.id,
+              title: sessionTitleForTask({ title, description }),
+              url: taskUrl(task.id),
+              text,
+              projectId,
+              worktree,
+              // Not 'open': that asks the host to navigate as part of resolving this
+              // very call, which could tear this page down before any of the code
+              // below — claiming the session, saving the link — ever runs.
+              // `host.openSession` below, called only once everything here is safely
+              // saved, is this extension's one and only navigation trigger.
+              navigation: 'preserve',
+            });
+          } catch (error) {
+            // OpenChamber's own worktree-creation endpoint can return "Remote branch
+            // not found: <name>" here, confirmed in testing to fire even for a branch
+            // that genuinely exists on the remote and is already fetched locally — a
+            // real OpenChamber bug, not a sign the name is wrong. That real reason
+            // doesn't survive the trip through startSession from an extension either;
+            // it collapses to a generic failure here, worth reporting upstream with
+            // the exact base branch below if it keeps happening.
+            if (typeof worktree === 'object' && worktree.kind === 'new' && worktree.baseBranch) {
+              throw new Error(
+                `Starting the agent failed (${describeHostError(error)}) while basing a new branch on ` +
+                `"${worktree.baseBranch}". OpenChamber doesn't pass along its real reason here, only this ` +
+                `generic failure — even when the base branch is correct and already fetched. Worth reporting ` +
+                `as an OpenChamber bug if it persists.`,
+              );
+            }
+            throw error;
+          }
+        } finally {
+          startingAgents -= 1;
+        }
         if (result.sessionId === null) {
           throw new Error(`Could not start the agent (${result.failure}). Its worktree at ${result.directory} was kept so you can recover it by hand.`);
         }
-        // A real session now exists and is likely already running. Claim it before the
-        // save below so the orphan watcher never adopts it as a second, duplicate task —
-        // this is the fix for "started an agent and got two cards for the same session."
+        // A real session now exists and is likely already running. Claim it right
+        // away — the one-id-specific guard that protects it from here on, now that
+        // the id is actually known, same as `startingAgents` did for the window before it.
         attemptedSessions.add(result.sessionId);
+        // Self-healing for whatever gap remains: if some other task already points at
+        // this exact session — the race above, caught too late, or a second window —
+        // that other task is a duplicate born of it, not a real second task. Removed,
+        // not left to confuse the board, with its own title named so it's recognizable.
+        const duplicate = tasks.find((t) => t.id !== task.id && t.sessionId === result.sessionId);
+        if (duplicate) {
+          void deleteTask(host, duplicate.id)
+            .then(() => host.toast({ kind: 'info', message: `Removed a duplicate card for the same chat: "${duplicate.title}".` }))
+            .catch(() => undefined);
+        }
         const updated = applyPatch(task, {
+          title,
+          description,
           sessionId: result.sessionId,
           projectId,
           status: 'in_progress',
           worktree: resolveTaskWorktree(worktree, result),
         });
         await saveTaskRetrying(updated);
-        leavingForChat = true;
-        setTasks(tasks.map((t) => (t.id === task.id ? updated : t)));
+        // Awaited before navigating away — see the matching comment in `onOpenChat`.
+        await persistOpenTask(null);
+        // The duplicate (if any) is dropped from in-memory state here, not just
+        // deleted from storage above — `tasks` was read before that delete settled.
+        setTasks(tasks.filter((t) => t.id !== duplicate?.id).map((t) => (t.id === task.id ? updated : t)));
         render();
+        // The session was created, but `text` (the description) may not have
+        // reached it — `startSession` reports this itself; it is not something
+        // retrying from here can fix (there is no "send a message to this
+        // session" call), so the best this can do is tell you plainly. The
+        // description itself isn't lost: it's still right here on the task.
+        const deliveryIssue = describeStartSessionDelivery(result.sent);
+        if (deliveryIssue) {
+          void host.toast({
+            kind: 'error',
+            message: `Started the agent, but your description wasn't sent automatically — ${deliveryIssue}. It's still saved on the task; open the chat and paste it in.`,
+          }).catch(() => undefined);
+        }
+        // The explicit navigation, deliberately deferred until everything above is
+        // safely saved — see the comment on `navigation: 'preserve'` above.
+        await host.openSession(result.sessionId);
         closeDetail();
       },
     });
@@ -397,7 +530,6 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
     const meta = el('div', 'kb-card-meta');
     const project = task.projectId ? projects.find((p) => p.id === task.projectId)?.name ?? task.projectId : null;
     if (project) meta.append(el('span', 'kb-muted', project));
-    if (task.sourceBranch) meta.append(el('span', 'kb-mono', task.sourceBranch));
     if (task.sessionId) meta.append(el('span', 'kb-mono', `session:${task.sessionId.slice(0, 8)}`));
     card.append(meta);
     if (!task.sessionId) card.append(el('p', 'kb-muted', 'No session yet — click to start an agent or link one.'));
@@ -440,6 +572,56 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
     });
   };
 
+  /**
+   * Deletions and archives usually happen in the sidebar while this board is
+   * closed, where no live watcher is running — so link health is re-checked
+   * freshly on every load, not only live. For each project holding linked
+   * tasks, fetches the current sessions and worktrees once, and clears
+   * every link that provably no longer resolves. Incomplete or failed
+   * fetches clear nothing — same "unknown is not gone" rule the live
+   * watchers follow.
+   */
+  const reconcileLinks = async () => {
+    const byProject = new Map<string, Task[]>();
+    for (const task of tasks) {
+      if (!task.projectId) continue;
+      if (!task.sessionId && !task.worktree) continue;
+      const list = byProject.get(task.projectId) ?? [];
+      list.push(task);
+      byProject.set(task.projectId, list);
+    }
+    if (byProject.size === 0) return;
+    const results = await Promise.allSettled([...byProject.keys()].map(async (projectId) => {
+      const [sessions, worktrees] = await Promise.all([fetchSessions(host, projectId), fetchWorktrees(host, projectId)]);
+      return { projectId, sessions, worktrees };
+    }));
+    if (disposed) return;
+    let cleared = 0;
+    for (const result of results) {
+      if (disposed) return;
+      if (result.status !== 'fulfilled') continue;
+      const { projectId, sessions, worktrees } = result.value;
+      // `fetchSessions` already drops archived sessions, so absence covers both
+      // "deleted" and "archived" here; `complete` false means the list can't be trusted.
+      const sessionsView: SessionsView = { state: sessions.complete ? 'ready' : 'error', coverage: [], sessions: sessions.sessions };
+      const worktreesView: WorktreesView = { state: worktrees.complete ? 'ready' : 'error', worktrees: worktrees.worktrees };
+      for (const task of byProject.get(projectId) ?? []) {
+        // Re-read from `tasks` — a live watcher may have unlinked this task while the fetches were in flight.
+        const current = tasks.find((t) => t.id === task.id);
+        if (!current || current.projectId !== projectId) continue;
+        if (current.sessionId && sessionLinkState(current.sessionId, null, sessionsView) === 'gone') {
+          if (clearTaskLink(current.id, { sessionId: null }, null)) cleared += 1;
+        }
+        if (current.worktree && worktreeLinkState(current.worktree.directory, worktreesView) === 'gone') {
+          if (clearTaskLink(current.id, { worktree: null }, null)) cleared += 1;
+        }
+      }
+    }
+    if (cleared > 0) {
+      void host.toast({ kind: 'info', message: `Cleared ${cleared} stale link${cleared === 1 ? '' : 's'} — the session or worktree behind ${cleared === 1 ? 'it' : 'them'} no longer exists.` }).catch(() => undefined);
+    }
+  };
+
   const reload = async () => {
     refresh.update({ loading: true });
     try {
@@ -462,6 +644,10 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
       if (failedKeys.length) showBanner('Some tasks could not be loaded', `${failedKeys.length} record(s) were skipped. Other tasks are safe; Refresh retries.`, 'warning');
       else clearBanner();
       render();
+      // Stale links (a session or worktree deleted while this board was closed)
+      // are cleared before the orphan watcher starts, so a session whose link
+      // is about to be dropped can never also be re-adopted as a duplicate.
+      await reconcileLinks();
       if (prefs.openTaskId && tasks.some((t) => t.id === prefs.openTaskId)) openDetail(prefs.openTaskId);
     } catch (error) { notify(error); }
     finally { refresh.update({ loading: false }); }
@@ -488,6 +674,7 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
       disposed = true;
       stopProjects?.();
       sessionSync.dispose();
+      worktreeSync.dispose();
       orphanWatcher?.dispose();
       detail?.dispose();
     },
