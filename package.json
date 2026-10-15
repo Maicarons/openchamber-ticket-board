@@ -1,0 +1,51 @@
+{
+  "name": "openchamber-kanban",
+  "version": "0.6.1",
+  "private": true,
+  "description": "Local-first Kanban board for OpenChamber that links tasks to real OpenCode sessions.",
+  "license": "MIT",
+  "type": "module",
+  "openchamber": {
+    "apiVersion": 1,
+    "engines": {
+      "openchamber": ">=1.24.0"
+    },
+    "contributes": {
+      "panel": {
+        "id": "kanban-board",
+        "name": "Kanban",
+        "icon": "task",
+        "entry": "panel/index.html"
+      },
+      "page": {
+        "entry": "panel/page.html",
+        "title": "Kanban board"
+      },
+      "capabilities": [
+        "sessions",
+        "prompt"
+      ],
+      "service": {
+        "entry": "service/main.js",
+        "runtime": "host",
+        "permissions": {
+          "exec": ["git"]
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@openchamber/sdk": "2.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0"
+  }
+}
