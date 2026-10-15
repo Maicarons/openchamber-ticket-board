@@ -11,7 +11,7 @@ import { createSessionSync } from '../host/sessionSync.ts';
 import { createWorktreeSync } from '../host/worktreeSync.ts';
 import { watchOrphanSessions } from '../host/orphanSessions.ts';
 import { DEFAULT_SYNC_OPTIONS } from '../domain/sync.ts';
-import { sessionLinkState, worktreeLinkState, type SessionsView, type WorktreesView } from '../domain/unlink.ts';
+import { sessionLinkState, worktreeLinkState, type SessionGoneReason, type SessionsView, type WorktreesView } from '../domain/unlink.ts';
 import { sessionTitleForTask, titleForOrphanSession } from '../domain/autoTask.ts';
 import { buildBaseBranchOptions, describeWorktreeOption, hasKnownBranches, resolveTaskWorktree } from '../domain/worktree.ts';
 import { mountTaskDetail } from './detail.ts';
@@ -126,9 +126,10 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
 
   /**
    * Clears one link on a task (its session, or its worktree) after the thing
-   * it points at was deleted or archived on the host. The state and save are
-   * unconditional — the caller checked the guard — but every caller updates
-   * its own state synchronously first, so a repeated report is a no-op.
+   * it points at was deleted or archived on the host. Session deletion uses
+   * deleteTaskForGoneSession instead. The state and save are unconditional —
+   * the caller checked the guard — but every caller updates its own state
+   * synchronously first, so a repeated report is a no-op.
    * `message` null means stay quiet (reconciliation reports one summary
    * instead of one toast per task).
    */
@@ -145,14 +146,34 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
   };
 
   /**
-   * A task's linked session was deleted or archived from the sidebar. The
-   * link must not outlive the session: without this the card keeps claiming
-   * a session that "Open Chat" can no longer open.
+   * A task's linked session was deleted or archived from the sidebar. A
+   * deleted session removes the task; an archived session only clears the
+   * link, so the card no longer claims a session that "Open Chat" cannot open.
    */
-  const onSessionGone = (taskId: string, sessionId: string) => {
+  const deleteTaskForGoneSession = (taskId: string, message: string | null): boolean => {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return false;
+    void deleteTask(host, task.id)
+      .then(() => {
+        if (prefs.openTaskId === task.id) void persistOpenTask(null);
+        if (message) void host.toast({ kind: 'info', message }).catch(() => undefined);
+      })
+      .catch((error) => { notify(error); void reload(); });
+    setTasks(tasks.filter((candidate) => candidate.id !== task.id));
+    detail?.dispose();
+    detail = null;
+    render();
+    return true;
+  };
+
+  const onSessionGone = (taskId: string, sessionId: string, reason: SessionGoneReason) => {
     const task = tasks.find((t) => t.id === taskId);
     if (!task || task.sessionId !== sessionId) return;
-    clearTaskLink(taskId, { sessionId: null }, `Unlinked "${task.title}" — its session was deleted or archived.`);
+    if (reason === 'deleted') {
+      deleteTaskForGoneSession(taskId, `Deleted "${task.title}" — its session was deleted.`);
+    } else {
+      clearTaskLink(taskId, { sessionId: null }, `Unlinked "${task.title}" — its session was archived.`);
+    }
   };
 
   /** A task's worktree was deleted from the sidebar; the recorded worktree no longer points anywhere. */
@@ -597,28 +618,37 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
     }));
     if (disposed) return;
     let cleared = 0;
+    let deleted = 0;
     for (const result of results) {
       if (disposed) return;
       if (result.status !== 'fulfilled') continue;
       const { projectId, sessions, worktrees } = result.value;
-      // `fetchSessions` already drops archived sessions, so absence covers both
-      // "deleted" and "archived" here; `complete` false means the list can't be trusted.
-      const sessionsView: SessionsView = { state: sessions.complete ? 'ready' : 'error', coverage: [], sessions: sessions.sessions };
+      // The full session list distinguishes archived sessions from deleted ones;
+      // `complete` false means the list can't be trusted.
+      const sessionsView: SessionsView = { state: sessions.complete ? 'ready' : 'error', coverage: [], sessions: sessions.allSessions };
       const worktreesView: WorktreesView = { state: worktrees.complete ? 'ready' : 'error', worktrees: worktrees.worktrees };
       for (const task of byProject.get(projectId) ?? []) {
         // Re-read from `tasks` — a live watcher may have unlinked this task while the fetches were in flight.
         const current = tasks.find((t) => t.id === task.id);
         if (!current || current.projectId !== projectId) continue;
-        if (current.sessionId && sessionLinkState(current.sessionId, null, sessionsView) === 'gone') {
-          if (clearTaskLink(current.id, { sessionId: null }, null)) cleared += 1;
+        if (current.sessionId) {
+          const sessionState = sessionLinkState(current.sessionId, null, sessionsView);
+          if (sessionState === 'deleted') {
+            if (deleteTaskForGoneSession(current.id, null)) deleted += 1;
+          } else if (sessionState === 'archived') {
+            if (clearTaskLink(current.id, { sessionId: null }, null)) cleared += 1;
+          }
         }
         if (current.worktree && worktreeLinkState(current.worktree.directory, worktreesView) === 'gone') {
           if (clearTaskLink(current.id, { worktree: null }, null)) cleared += 1;
         }
       }
     }
-    if (cleared > 0) {
-      void host.toast({ kind: 'info', message: `Cleared ${cleared} stale link${cleared === 1 ? '' : 's'} — the session or worktree behind ${cleared === 1 ? 'it' : 'them'} no longer exists.` }).catch(() => undefined);
+    if (cleared > 0 || deleted > 0) {
+      const parts = [];
+      if (deleted > 0) parts.push(`deleted ${deleted} task${deleted === 1 ? '' : 's'}`);
+      if (cleared > 0) parts.push(`cleared ${cleared} stale link${cleared === 1 ? '' : 's'}`);
+      void host.toast({ kind: 'info', message: `${parts.join(' and ')} — the session or worktree behind ${parts.length === 1 && deleted > 0 ? 'it' : 'them'} no longer exists.` }).catch(() => undefined);
     }
   };
 
@@ -680,4 +710,3 @@ export const mountKanbanBoard = (host: BoardHost, root: Element) => {
     },
   };
 };
-

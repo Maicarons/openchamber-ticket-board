@@ -87,31 +87,31 @@ test('dispose releases every open subscription', async () => {
 test('an archived session reports gone, with no status change', async () => {
   const { host, push } = fakeHost();
   const changes: Array<[string, TaskStatus]> = [];
-  const gone: Array<[string, string]> = [];
-  const sync = createSessionSync(host, DEFAULT_SYNC_OPTIONS, (id, status) => changes.push([id, status]), (id, sessionId) => gone.push([id, sessionId]));
+  const gone: Array<[string, string, string]> = [];
+  const sync = createSessionSync(host, DEFAULT_SYNC_OPTIONS, (id, status) => changes.push([id, status]), (id, sessionId, reason) => gone.push([id, sessionId, reason]));
   const task = { ...createTask({ title: 't', projectId: 'p1' }, 1), sessionId: 'ses_1' };
   sync.sync([task]);
   await Promise.resolve();
   push('p1', snapshot('p1', [{ ...session('ses_1', 'idle', 'completed'), archivedAt: 99 }]));
-  assert.deepEqual(gone, [[task.id, 'ses_1']]);
+  assert.deepEqual(gone, [[task.id, 'ses_1', 'archived']]);
   assert.deepEqual(changes, []);
 });
 
 test('a session absent from a ready snapshot reports gone', async () => {
   const { host, push } = fakeHost();
-  const gone: Array<[string, string]> = [];
-  const sync = createSessionSync(host, DEFAULT_SYNC_OPTIONS, () => {}, (id, sessionId) => gone.push([id, sessionId]));
+  const gone: Array<[string, string, string]> = [];
+  const sync = createSessionSync(host, DEFAULT_SYNC_OPTIONS, () => {}, (id, sessionId, reason) => gone.push([id, sessionId, reason]));
   const task = { ...createTask({ title: 't', projectId: 'p1' }, 1), sessionId: 'ses_1' };
   sync.sync([task]);
   await Promise.resolve();
   push('p1', snapshot('p1', []));
-  assert.deepEqual(gone, [[task.id, 'ses_1']]);
+  assert.deepEqual(gone, [[task.id, 'ses_1', 'deleted']]);
 });
 
 test('a session absent from a loading snapshot reports nothing', async () => {
   const { host, push } = fakeHost();
-  const gone: Array<[string, string]> = [];
-  const sync = createSessionSync(host, DEFAULT_SYNC_OPTIONS, () => {}, (id, sessionId) => gone.push([id, sessionId]));
+  const gone: Array<[string, string, string]> = [];
+  const sync = createSessionSync(host, DEFAULT_SYNC_OPTIONS, () => {}, (id, sessionId, reason) => gone.push([id, sessionId, reason]));
   const task = { ...createTask({ title: 't', projectId: 'p1' }, 1), sessionId: 'ses_1' };
   sync.sync([task]);
   await Promise.resolve();
@@ -136,8 +136,8 @@ test('once the caller clears the link, the same absence reports nothing further'
 
 test('absence is not trusted while the directory the session was last seen in is still loading', async () => {
   const { host, push } = fakeHost();
-  const gone: Array<[string, string]> = [];
-  const sync = createSessionSync(host, DEFAULT_SYNC_OPTIONS, () => {}, (id, sessionId) => gone.push([id, sessionId]));
+  const gone: Array<[string, string, string]> = [];
+  const sync = createSessionSync(host, DEFAULT_SYNC_OPTIONS, () => {}, (id, sessionId, reason) => gone.push([id, sessionId, reason]));
   const task = { ...createTask({ title: 't', projectId: 'p1' }, 1), sessionId: 'ses_1' };
   sync.sync([task]);
   await Promise.resolve();
@@ -149,5 +149,5 @@ test('absence is not trusted while the directory the session was last seen in is
   assert.deepEqual(gone, []);
   // ...and once coverage is ready again, the absence is trusted.
   push('p1', { kind: 'sessions', projectId: 'p1', state: 'ready', coverage: [{ directory: '/wt', state: 'ready' }], sessions: [] });
-  assert.deepEqual(gone, [[task.id, 'ses_1']]);
+  assert.deepEqual(gone, [[task.id, 'ses_1', 'deleted']]);
 });

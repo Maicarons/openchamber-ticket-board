@@ -8,7 +8,7 @@ export type ProjectsState = { state: 'loading' | 'ready' | 'error'; projects: Gu
 export const watchProjects = async (host: WorkspaceHost, listener: (state: ProjectsState) => void) =>
   host.onProjects((snapshot) => listener({ state: snapshot.state, projects: snapshot.projects }));
 
-export type SessionsResult = { complete: boolean; sessions: GuestSessionRecord[] };
+export type SessionsResult = { complete: boolean; sessions: GuestSessionRecord[]; allSessions: GuestSessionRecord[] };
 
 /**
  * One-off session list for a project. Subscribes, resolves on the first
@@ -25,10 +25,11 @@ export const fetchSessions = (host: WorkspaceHost, projectId: string, timeoutMs 
       settled = true;
       clearTimeout(timer);
       release?.();
-      const sessions = (snapshot?.sessions ?? [])
-        .filter((session) => session.parentId === null && session.archivedAt === null)
+      const allSessions = (snapshot?.sessions ?? [])
+        .filter((session) => session.parentId === null)
         .sort((a, b) => b.updatedAt - a.updatedAt);
-      resolve({ complete: snapshot?.state === 'ready', sessions });
+      const sessions = allSessions.filter((session) => session.archivedAt === null);
+      resolve({ complete: snapshot?.state === 'ready', sessions, allSessions });
     };
     const timer = setTimeout(() => finish(last), timeoutMs);
     host.onSessions(projectId, (snapshot) => {
