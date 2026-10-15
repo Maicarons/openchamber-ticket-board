@@ -116,19 +116,7 @@ Some things are not possible with the current OpenChamber SDK (SDK = the toolkit
 - **It cannot watch for new chats while you are in a different chat.** Starting a chat always switches your screen away from this board. The board can only check for new chats the next time you open it.
 - **It cannot set a separate folder name for a new worktree.** The branch name and the folder name are always the same.
 
-## Adding screenshots to this file
 
-I (the assistant) can see a screenshot you paste into our chat, but I cannot save that image file by myself — I have no way to write it to disk from the chat.
-
-To add a screenshot here:
-
-1. Save the image yourself into this folder, for example in a new `screenshots/` folder (`screenshots/board.png`).
-2. Tell me the file name.
-3. I will add a line like this to the README:
-
-```markdown
-![Kanban board](screenshots/board.png)
-```
 
 ## Project files
 
