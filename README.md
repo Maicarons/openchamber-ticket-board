@@ -19,6 +19,14 @@ All your data stays on your own OpenChamber server. This extension does not send
 - Delete or archive a session, or delete a worktree, in the OpenChamber sidebar — the task is unlinked automatically. The task itself stays on the board. You can start a new agent for it, or link another session.
 - Move a task to any column two ways: drag the card, or open the task and click one of the "Move to" buttons. There is one button for every column.
 
+
+
+
+
+<img width="1577" height="993" alt="Screenshot 2026-10-15 at 4 02 10 PM" src="https://github.com/user-attachments/assets/c738c32b-fd31-4c46-bcd1-1b450f98d45e" />
+<img width="1557" height="870" alt="Screenshot 2026-10-15 at 4 01 49 PM" src="https://github.com/user-attachments/assets/02899ebb-71da-4d9a-9a8a-c609de1a7ef1" />
+
+
 ### The Review column moves on its own
 
 Some tasks move to the **Review** column by themselves. You do not drag them there. This happens when:
