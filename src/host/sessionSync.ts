@@ -1,6 +1,6 @@
 import type { GuestSessionsSnapshot, HostClient } from '@openchamber/sdk';
 import { statusForSession, type SyncOptions } from '../domain/sync.ts';
-import { sessionLinkState } from '../domain/unlink.ts';
+import { sessionLinkState, type SessionGoneReason } from '../domain/unlink.ts';
 import type { Task, TaskStatus } from '../domain/task.ts';
 
 export type SessionSyncHost = Pick<HostClient, 'onSessions'>;
@@ -17,7 +17,7 @@ export const createSessionSync = (
   host: SessionSyncHost,
   options: SyncOptions,
   onStatusChange: (taskId: string, next: TaskStatus) => void,
-  onSessionGone?: (taskId: string, sessionId: string) => void,
+  onSessionGone?: (taskId: string, sessionId: string, reason: SessionGoneReason) => void,
 ) => {
   const subscriptions = new Map<string, Promise<() => void>>();
   let tasksById = new Map<string, Task>();
@@ -30,8 +30,9 @@ export const createSessionSync = (
     for (const session of snapshot.sessions) sessionDirectories.set(session.id, session.directory);
     for (const task of tasksById.values()) {
       if (task.projectId !== projectId || !task.sessionId) continue;
-      if (onSessionGone && sessionLinkState(task.sessionId, sessionDirectories.get(task.sessionId) ?? null, snapshot) === 'gone') {
-        onSessionGone(task.id, task.sessionId);
+      const linkState = sessionLinkState(task.sessionId, sessionDirectories.get(task.sessionId) ?? null, snapshot);
+      if (onSessionGone && (linkState === 'deleted' || linkState === 'archived')) {
+        onSessionGone(task.id, task.sessionId, linkState);
         continue;
       }
       const session = snapshot.sessions.find((candidate) => candidate.id === task.sessionId);

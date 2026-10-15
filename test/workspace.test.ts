@@ -32,6 +32,7 @@ test('fetchSessions resolves on the first ready snapshot, newest first, parents 
   const result = await fetchSessions(host, 'p1');
   assert.equal(result.complete, true);
   assert.deepEqual(result.sessions.map((s) => s.id), ['b', 'a']);
+  assert.deepEqual(result.allSessions.map((s) => s.id), ['arch', 'b', 'a']);
 });
 
 test('fetchSessions reports incomplete on an error snapshot instead of throwing', async () => {

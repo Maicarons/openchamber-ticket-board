@@ -1,11 +1,13 @@
 /**
  * Link health: whether what a task points at — its session, or its worktree —
- * still exists on the host. The answer is only ever trusted as "gone" when
- * the snapshot provably finished loading; anything less is "unknown", and a
- * caller must never unlink on "unknown" — an incomplete list is not a
- * disappearance, and unlinking loses the link permanently.
+ * still exists on the host. The answer is only ever trusted as deleted or
+ * gone when the snapshot provably finished loading; anything less is
+ * "unknown", and a caller must never act on "unknown" — an incomplete list
+ * is not a disappearance.
  */
 export type LinkState = 'linked' | 'gone' | 'unknown';
+export type SessionGoneReason = 'deleted' | 'archived';
+export type SessionLinkState = 'linked' | SessionGoneReason | 'unknown';
 
 export type LoadState = 'loading' | 'ready' | 'error';
 
@@ -24,23 +26,23 @@ export type WorktreesView = {
 
 /**
  * Whether a linked session still exists. An archived session (`archivedAt`)
- * counts as gone — the sidebar's archive breaks the link just like a delete.
- * An absent one counts as gone only when the snapshot finished loading and,
+ * is reported separately from a deleted session so callers can keep or delete
+ * the task appropriately. An absent one counts as deleted only when the snapshot finished loading and,
  * for the directory the session was last seen in, coverage finished too:
  * a session missing from a snapshot that hasn't read its directory yet
  * proves nothing. `directory` is `null` when unknown, in which case every
  * coverage entry must be ready before absence is trusted.
  */
-export const sessionLinkState = (sessionId: string, directory: string | null, view: SessionsView): LinkState => {
+export const sessionLinkState = (sessionId: string, directory: string | null, view: SessionsView): SessionLinkState => {
   const found = view.sessions.find((session) => session.id === sessionId);
-  if (found) return found.archivedAt === null ? 'linked' : 'gone';
+  if (found) return found.archivedAt === null ? 'linked' : 'archived';
   if (view.state !== 'ready') return 'unknown';
   if (directory !== null) {
     const entry = view.coverage.find((coverage) => coverage.directory === directory);
     if (entry && entry.state !== 'ready') return 'unknown';
-    return 'gone';
+    return 'deleted';
   }
-  return view.coverage.some((coverage) => coverage.state !== 'ready') ? 'unknown' : 'gone';
+  return view.coverage.some((coverage) => coverage.state !== 'ready') ? 'unknown' : 'deleted';
 };
 
 /**

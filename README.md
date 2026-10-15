@@ -16,7 +16,7 @@ All your data stays on your own OpenChamber server. This extension does not send
 - The task now links to that chat and moves to **In Progress**. Click the task card later, and it opens the same chat again.
 - You can also link an already-running chat to a task, instead of starting a new one.
 - Start a session from a task on this board, and it stays linked to that task. It does not create another task. Start a session from the OpenChamber sidebar, and the board can add a new task for it automatically, as described below.
-- Delete or archive a session, or delete a worktree, in the OpenChamber sidebar — the task is unlinked automatically. The task itself stays on the board. You can start a new agent for it, or link another session.
+- Delete a session in the OpenChamber sidebar — the linked task is deleted automatically. Archive a session, or delete a worktree — the corresponding link is cleared and the task stays on the board. You can start a new agent for it, or link another session.
 - Move a task to any column two ways: drag the card, or open the task and click one of the "Move to" buttons. There is one button for every column.
 
 
