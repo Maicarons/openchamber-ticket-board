@@ -205,6 +205,7 @@ export const mountTicketDetail = (root: Element, props: TicketDetailProps) => {
   outcome.append(outcomeGrid);
 
   let comment = '';
+  let commentButton: ReturnType<typeof mountButton> | null = null;
   const commentWrap = el('div');
   outcomeGrid.append(commentWrap);
   const commentField = mountTextField(commentWrap, {
@@ -213,23 +214,24 @@ export const mountTicketDetail = (root: Element, props: TicketDetailProps) => {
     multiline: true,
     rows: 3,
     placeholder: 'What did you learn or decide?',
-    onChange: (value) => { comment = value; commentField.update({ value }); commentButton.update({ disabled: !comment.trim() }); },
+    onChange: (value) => { comment = value; commentField.update({ value }); commentButton?.update({ disabled: !comment.trim() }); },
   });
-  const commentButton = mountButton(commentWrap, {
+  commentButton = mountButton(commentWrap, {
     label: 'Add comment',
     variant: 'secondary',
     size: 'sm',
     disabled: true,
     onClick: () => {
       if (!comment.trim()) return;
-      commentButton.update({ loading: true });
+      commentButton?.update({ loading: true });
       void props.onEdit([{ kind: 'comment', body: comment, author: 'Board', at: new Date().toISOString() }])
         .catch(showError)
-        .finally(() => commentButton.update({ loading: false }));
+        .finally(() => commentButton?.update({ loading: false }));
     },
   });
 
   let answer = '';
+  let answerButton: ReturnType<typeof mountButton> | null = null;
   const answerWrap = el('div');
   outcomeGrid.append(answerWrap);
   const answerField = mountTextField(answerWrap, {
@@ -238,19 +240,19 @@ export const mountTicketDetail = (root: Element, props: TicketDetailProps) => {
     multiline: true,
     rows: 3,
     placeholder: 'What resolves this ticket?',
-    onChange: (value) => { answer = value; answerField.update({ value }); answerButton.update({ disabled: !answer.trim() }); },
+    onChange: (value) => { answer = value; answerField.update({ value }); answerButton?.update({ disabled: !answer.trim() }); },
   });
-  const answerButton = mountButton(answerWrap, {
+  answerButton = mountButton(answerWrap, {
     label: 'Resolve with answer',
     size: 'sm',
     disabled: true,
     onClick: () => {
       if (!answer.trim()) return;
-      answerButton.update({ loading: true });
+      answerButton?.update({ loading: true });
       void props.onEdit([
         { kind: 'answer', body: answer, at: new Date().toISOString() },
         { kind: 'status', status: 'resolved' },
-      ]).catch(showError).finally(() => answerButton.update({ loading: false }));
+      ]).catch(showError).finally(() => answerButton?.update({ loading: false }));
     },
   });
   dialog.append(outcome);

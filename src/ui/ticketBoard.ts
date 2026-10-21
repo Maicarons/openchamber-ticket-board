@@ -623,7 +623,7 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
   const buildEmptyState = () => {
     const wrap = el('div', 'kb-empty-state');
     wrap.append(el('h2', '', 'No tickets found'));
-    const spec = state.context.find((ticket) => ticket.kind === 'spec');
+    const spec = state.context.find((ticket) => ticket.kind === 'spec' && /(^|\/)spec\.md$/i.test(ticket.path));
     if (spec) {
       wrap.append(el('p', '', 'This project has a spec but no issue files yet. Ask an agent to turn the spec into tickets.'));
       const prompt = `/to-tickets ${spec.path}\n\nFeature: ${spec.feature}\nSpec: ${spec.path}`;
