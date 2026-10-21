@@ -1,14 +1,15 @@
 import type { GuestProject, GuestSessionWorktree, HostClient } from '@openchamber/sdk';
 import { mountBanner, mountButton, mountSearchField, mountSelect, mountSpinner, mountTextField } from '@openchamber/sdk/ui';
 import { ALL_FEATURES, boardTicketsFromFiles, columnOf, contextFiles, featureNames, filterBoardTickets, frontierPaths, groupBoardColumns, hasMap, hasSpec, mapFor, specFor, type BoardTicket } from '../domain/ticketBoard.ts';
-import { TICKET_COLUMNS, TICKET_COLUMN_LABELS } from '../domain/ticketColumns.ts';
+import { TICKET_COLUMNS, ticketColumnLabel } from '../domain/ticketColumns.ts';
 import { DEFAULT_TRIAGE_LABELS, statusForTriageRole } from '../domain/triageLabels.ts';
 import { previewTicketEdits, type TicketEdit, type TicketEditPreview } from '../domain/ticketEdit.ts';
 import { discoveredKey, orphanLinkKeys, ticketLinkKey, type TicketLink } from '../domain/ticketIndex.ts';
 import { SETUP_PROMPT } from '../domain/ticketActions.ts';
 import type { Ticket } from '../domain/ticket.ts';
+import { asLanguagePreference, resolveLanguage, translator, type Language, type LanguagePreference } from '../i18n.ts';
 import { deleteTicketLink, loadTicketLinks, saveTicketLink } from '../store/ticketStore.ts';
-import { loadPrefs, savePrefs, type Prefs } from '../store/prefs.ts';
+import { DEFAULT_PREFS, loadPrefs, savePrefs, type Prefs } from '../store/prefs.ts';
 import { describeHostError, describeStartSessionDelivery, fetchSessions, fetchWorktrees, watchProjects } from '../host/workspace.ts';
 import { fetchServiceBranches } from '../host/branchService.ts';
 import { commitTicketFile, fetchTicketBundle, fetchTrackerInfo, writeTicketFile, type TicketBundle } from '../host/ticketService.ts';
@@ -29,6 +30,13 @@ export type BoardHost = Pick<
 >;
 
 const EXTENSION_ID = 'kanban-board';
+
+/** Commit messages are repository history, so they stay English regardless of the UI language. */
+const COMMIT_ACTIONS = {
+  move: 'move',
+  fields: 'update fields of',
+  blockedBy: 'set Blocked by for',
+} as const;
 
 /**
  * A stable, short id for the host's issue chip. Ticket paths and project ids
@@ -61,7 +69,48 @@ type BoardState = {
 
 const emptyState = (): BoardState => ({ all: [], context: [], labels: DEFAULT_TRIAGE_LABELS, complete: true, warnings: [] });
 
-export const mountTicketBoard = (host: BoardHost, root: Element) => {
+export type BoardOptions = {
+  /** OpenChamber's locale, used when the preference is `auto`. */
+  locale: string;
+  language: Language;
+  languagePreference: LanguagePreference;
+};
+
+type BoardViewProps = {
+  language: Language;
+  languagePreference: LanguagePreference;
+  onLanguageChange: (preference: LanguagePreference) => void;
+};
+
+/**
+ * Changing the language remounts the view. That is deliberate: every control
+ * was created with translated labels, and rebuilding the small board is safer
+ * than trying to patch dozens of mounted widgets in place.
+ */
+export const mountTicketBoard = (host: BoardHost, root: Element, options: BoardOptions) => {
+  let current: { dispose: () => void } | null = null;
+  let disposed = false;
+  const start = (languagePreference: LanguagePreference, language: Language) => {
+    if (disposed) return;
+    current?.dispose();
+    current = mountBoardView(host, root, {
+      language,
+      languagePreference,
+      onLanguageChange: (next) => start(next, resolveLanguage(next, options.locale)),
+    });
+  };
+  start(options.languagePreference, options.language);
+  return {
+    dispose: () => {
+      disposed = true;
+      current?.dispose();
+      current = null;
+    },
+  };
+};
+
+const mountBoardView = (host: BoardHost, root: Element, props: BoardViewProps) => {
+  const t = translator(props.language);
   injectStyles();
   root.replaceChildren();
 
@@ -72,8 +121,9 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
   const projectWrap = el('div');
   const featureWrap = el('div');
   const searchWrap = el('div', 'grow');
-  toolbar.append(projectWrap, featureWrap, searchWrap);
-  const refresh = mountButton(toolbar, { label: 'Refresh', variant: 'ghost', onClick: () => { void reload(); } });
+  const languageWrap = el('div');
+  toolbar.append(projectWrap, featureWrap, searchWrap, languageWrap);
+  const refresh = mountButton(toolbar, { label: t('board.refresh'), variant: 'ghost', onClick: () => { void reload(); } });
 
   const bannerSlot = el('div');
   bannerSlot.hidden = true;
@@ -84,6 +134,7 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
     banner.update({ tone, title, body });
   };
   const clearBanner = () => { bannerSlot.hidden = true; };
+  const notify = (error: unknown) => showBanner(t('board.somethingWrong'), describeHostError(error, props.language));
 
   const commitSlot = el('div', 'kb-commit-bar');
   commitSlot.hidden = true;
@@ -93,28 +144,37 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
     lastChange = { entry, action };
     commitSlot.hidden = false;
     commitSlot.replaceChildren();
-    commitSlot.append(el('span', '', `Wrote ${entry.ticket.path}. Nothing is committed.`));
+    commitSlot.append(el('span', '', t('board.wrote', { path: entry.ticket.path })));
     mountButton(commitSlot, {
-      label: 'Commit this change',
+      label: t('board.commitThisChange'),
       size: 'sm',
       onClick: () => {
         void (async () => {
           if (!lastChange) return;
           const message = `tickets: ${lastChange.action} ${lastChange.entry.ticket.title}`.slice(0, 200);
-          const result = await commitTicketFile(host, lastChange.entry.projectDirectory, lastChange.entry.ticket.path, message);
+          const result = await commitTicketFile(
+            host,
+            lastChange.entry.projectDirectory,
+            lastChange.entry.ticket.path,
+            message,
+            props.language,
+          );
           if (!result.ok) {
-            showBanner('Could not commit', result.message, 'warning');
+            showBanner(t('board.couldNotCommit'), result.message, 'warning');
             return;
           }
           commitSlot.hidden = true;
           lastChange = null;
           clearBanner();
-          void host.toast({ kind: 'info', message: `Committed ${result.commit.split('\n')[0]}` }).catch(() => undefined);
+          void host.toast({
+            kind: 'info',
+            message: t('board.committed', { subject: result.commit.split('\n')[0] ?? message }),
+          }).catch(() => undefined);
         })();
       },
     });
     mountButton(commitSlot, {
-      label: 'Dismiss',
+      label: t('common.dismiss'),
       variant: 'ghost',
       size: 'sm',
       onClick: () => { commitSlot.hidden = true; lastChange = null; },
@@ -133,7 +193,7 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
   footer.append(queueNote);
 
   let projects: GuestProject[] = [];
-  let prefs: Prefs = { projectId: '', feature: ALL_FEATURES, query: '', openTicketPath: null };
+  let prefs: Prefs = { ...DEFAULT_PREFS, language: props.languagePreference };
   let filter = { projectId: '', feature: ALL_FEATURES, query: '' };
   let state = emptyState();
   let links = new Map<string, TicketLink>();
@@ -198,35 +258,36 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
     void saveTicketLink(host, updated).catch(notify);
   };
 
-  const notify = (error: unknown) => showBanner('Something went wrong', describeHostError(error));
-
   // ----- writes: preview first, save second, never auto-commit -----
   const requestEdits = async (entry: BoardTicket, edits: TicketEdit[], action: string): Promise<void> => {
     const current = state.all.find((candidate) => candidate.projectId === entry.projectId && candidate.ticket.path === entry.ticket.path);
-    if (!current) throw new Error('This ticket is no longer on the board; refresh.');
-    let preview: TicketEditPreview;
-    try {
-      preview = previewTicketEdits(current.ticket, edits);
-    } catch (error) {
-      throw error;
-    }
+    if (!current) throw new Error(t('board.ticketGone'));
+    const preview = previewTicketEdits(current.ticket, edits, props.language);
     if (!preview.changed) return;
-    if (!current.projectDirectory) throw new Error('The project directory is unknown.');
+    if (!current.projectDirectory) throw new Error(t('board.projectDirectoryUnknown'));
 
-    await new Promise<void>((resolve, reject) => {
+    await new Promise<void>((resolve) => {
       diffDialog?.dispose();
       diffDialog = mountDiffDialog(root, {
-        title: `Write ${current.ticket.path}?`,
+        title: t('board.writeTitle', { path: current.ticket.path }),
         summary: preview.summary,
         diff: preview.diff,
+        language: props.language,
         onCancel: () => { diffDialog?.dispose(); diffDialog = null; resolve(); },
         onConfirm: async () => {
-          const result = await writeTicketFile(host, current.projectDirectory, current.ticket.path, preview.after, preview.before);
+          const result = await writeTicketFile(
+            host,
+            current.projectDirectory,
+            current.ticket.path,
+            preview.after,
+            preview.before,
+            props.language,
+          );
           if (!result.ok) {
             if (result.conflict) {
               diffDialog?.dispose();
               diffDialog = null;
-              showBanner('The ticket changed on disk', 'Reloading the board so you can review the current file. Nothing was overwritten.', 'warning');
+              showBanner(t('board.changedOnDiskTitle'), t('board.changedOnDiskBody'), 'warning');
               await reopen(prefs.openTicketPath);
             }
             throw new Error(result.message);
@@ -284,16 +345,16 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
     const link = links.get(id);
     if (!link || link.sessionId !== sessionId) return;
     if (reason === 'deleted') {
-      forgetLink(id, 'Unlinked a ticket — its session was deleted.');
+      forgetLink(id, t('board.unlinkedDeleted'));
     } else {
-      clearLink(id, { sessionId: null }, 'Unlinked a ticket — its session was archived.');
+      clearLink(id, { sessionId: null }, t('board.unlinkedArchived'));
     }
   });
 
   const worktreeSync = createWorktreeSync(host, (id) => {
     const link = links.get(id);
     if (!link || !link.worktree) return;
-    clearLink(id, { worktree: null }, 'Cleared a ticket\'s worktree link — that worktree was deleted.');
+    clearLink(id, { worktree: null }, t('board.worktreeDeleted'));
   });
 
   let unlinkedWatcher: { dispose: () => void } | null = null;
@@ -301,7 +362,7 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
   // ----- project and feature controls -----
   const projectOptions = () => projects.map((project) => ({ id: project.id, label: project.name }));
   const projectSelect = mountSelect(projectWrap, {
-    label: 'Project', value: null, options: [], searchable: projects.length > 6,
+    label: t('board.project'), value: null, options: [], searchable: projects.length > 6,
     onChange: (value) => {
       filter = { ...filter, projectId: value, feature: ALL_FEATURES };
       projectSelect.update({ value });
@@ -311,11 +372,11 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
   });
 
   const featureOptions = () => [
-    { id: ALL_FEATURES, label: 'All features' },
+    { id: ALL_FEATURES, label: t('board.allFeatures') },
     ...featureNames(state.all, state.context).map((feature) => ({ id: feature, label: feature })),
   ];
   const featureSelect = mountSelect(featureWrap, {
-    label: 'Feature', value: ALL_FEATURES, options: featureOptions(),
+    label: t('board.feature'), value: ALL_FEATURES, options: featureOptions(),
     onChange: (value) => {
       filter = { ...filter, feature: value };
       featureSelect.update({ value });
@@ -326,13 +387,37 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
   });
 
   const searchField = mountSearchField(searchWrap, {
-    value: '', placeholder: 'Search title, number, body, comments…',
+    value: '', placeholder: t('board.searchPlaceholder'),
     onChange: (value) => {
       filter = { ...filter, query: value };
       searchField.update({ value });
       prefs = { ...prefs, query: value };
       void savePrefs(host, prefs).catch(() => undefined);
       render();
+    },
+  });
+
+  const languageSelect = mountSelect(languageWrap, {
+    label: t('common.language'),
+    value: props.languagePreference,
+    options: [
+      { id: 'auto', label: t('common.language.auto') },
+      { id: 'en', label: t('common.language.en') },
+      { id: 'zh', label: t('common.language.zh') },
+    ],
+    onChange: (value) => {
+      const preference = asLanguagePreference(value);
+      if (preference === prefs.language) return;
+      const previous = prefs.language;
+      prefs = { ...prefs, language: preference };
+      languageSelect.update({ value: preference });
+      void savePrefs(host, prefs)
+        .then(() => props.onLanguageChange(preference))
+        .catch((error) => {
+          prefs = { ...prefs, language: previous };
+          languageSelect.update({ value: previous });
+          notify(error);
+        });
     },
   });
 
@@ -348,6 +433,7 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
     void persistOpen(ticket.path);
     detail = mountTicketDetail(root, {
       entry,
+      language: props.language,
       labels: state.labels,
       feature: ticket.feature,
       hasSpec: hasSpec(state.context, ticket.feature),
@@ -359,7 +445,12 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
       onClose: closeDetail,
       onEdit: async (edits) => {
         const editPath = ticket.path;
-        await requestEdits(entry, edits, edits.length > 1 ? 'update fields of' : edits[0]?.kind === 'status' ? 'move' : 'set Blocked by for');
+        const action = edits.length > 1
+          ? COMMIT_ACTIONS.fields
+          : edits[0]?.kind === 'status'
+            ? COMMIT_ACTIONS.move
+            : COMMIT_ACTIONS.blockedBy;
+        await requestEdits(entry, edits, action);
         openDetail(editPath);
       },
       onOpenChat: async (sessionId) => {
@@ -406,10 +497,10 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
       loadWorktreeInfo: async (projectId) => {
         const result = await fetchWorktrees(host, projectId);
         const directory = projectDirectory(projectId);
-        const serviceBranches = directory ? await fetchServiceBranches(host, directory) : null;
+        const serviceBranches = directory ? await fetchServiceBranches(host, directory, props.language) : null;
         return {
           destinations: result.worktrees.map(describeWorktreeOption),
-          baseBranches: serviceBranches ?? buildBaseBranchOptions(result.worktrees),
+          baseBranches: serviceBranches ?? buildBaseBranchOptions(result.worktrees, props.language),
           hasKnownBranches: serviceBranches ? serviceBranches.length > 2 : hasKnownBranches(result.worktrees),
         };
       },
@@ -435,7 +526,7 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
         navigation: 'preserve',
       });
       if (result.sessionId === null) {
-        throw new Error(`Could not start the agent (${result.failure}). Its worktree at ${result.directory} was kept so you can recover it by hand.`);
+        throw new Error(t('board.startFailed', { failure: result.failure, directory: result.directory }));
       }
       attemptedSessions.add(result.sessionId);
       await saveLink({
@@ -451,11 +542,11 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
       await persistOpen(null);
       closeDetail();
       setEntries(state.all);
-      const deliveryIssue = describeStartSessionDelivery(result.sent);
+      const deliveryIssue = describeStartSessionDelivery(result.sent, props.language);
       if (deliveryIssue) {
         void host.toast({
           kind: 'error',
-          message: `Started the agent, but the prompt wasn't sent automatically — ${deliveryIssue}. It's still saved here; open the chat and paste it in.`,
+          message: t('board.deliveryIssue', { issue: deliveryIssue }),
         }).catch(() => undefined);
       }
       await host.openSession(result.sessionId);
@@ -476,23 +567,23 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
     const close = () => { overlay.remove(); setupDialog = null; };
     overlay.addEventListener('click', (event) => { if (event.target === overlay) close(); });
 
-    dialog.append(el('h2', '', 'Set up the ticket workflow'));
-    dialog.append(el('p', 'kb-muted', 'This opens an agent in the project you choose. The agent edits the repository; the board itself never does. Review and send the prompt below.'));
+    dialog.append(el('h2', '', t('board.setupTitle')));
+    dialog.append(el('p', 'kb-muted', t('board.setupBody')));
     let projectId = filter.projectId || projects[0]?.id || '';
     const projectField = mountSelect(dialog, {
-      label: 'Project', value: projectId || null, options: projectOptions(), searchable: projects.length > 6,
+      label: t('board.project'), value: projectId || null, options: projectOptions(), searchable: projects.length > 6,
       onChange: (value) => { projectId = value; projectField.update({ value }); },
     });
     let prompt = initialPrompt;
     const promptField = mountTextField(dialog, {
-      label: 'Prompt', value: prompt, multiline: true, rows: 5,
+      label: t('board.setupPrompt'), value: prompt, multiline: true, rows: 5,
       onChange: (value) => { prompt = value; promptField.update({ value }); },
     });
     const row = el('div', 'kb-row between');
     dialog.append(row);
-    mountButton(row, { label: 'Cancel', variant: 'outline', onClick: close });
+    mountButton(row, { label: t('common.cancel'), variant: 'outline', onClick: close });
     mountButton(row, {
-      label: 'Start setup agent',
+      label: t('board.startSetup'),
       disabled: !projectId,
       onClick: () => {
         void (async () => {
@@ -500,13 +591,13 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
             const result = await host.startSession({
               providerId: EXTENSION_ID,
               id: issueRef('setup', projectId),
-              title: 'Set up ticket workflow',
+              title: t('board.setupSessionTitle'),
               url: `https://kanban.local/setup/${issueRef('setup', projectId)}`,
               text: prompt,
               projectId,
               navigation: 'preserve',
             });
-            if (result.sessionId === null) throw new Error(`Could not start the agent (${result.failure}).`);
+            if (result.sessionId === null) throw new Error(t('board.setupStartFailed', { failure: result.failure }));
             close();
             await host.openSession(result.sessionId);
           } catch (error) { notify(error); }
@@ -527,15 +618,15 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
     overlay.append(dialog);
     const close = () => overlay.remove();
     overlay.addEventListener('click', (event) => { if (event.target === overlay) close(); });
-    dialog.append(el('h2', '', 'Unlinked sessions'));
-    dialog.append(el('p', 'kb-muted', 'These real sessions are not linked to any ticket. Open a ticket and use “link an existing session” to attach one.'));
+    dialog.append(el('h2', '', t('board.unlinkedSessionsTitle')));
+    dialog.append(el('p', 'kb-muted', t('board.unlinkedSessionsBody')));
     for (const [id, session] of unlinkedSessions) {
       const row = el('div', 'kb-row between kb-unlinked-row');
       row.append(el('span', '', session.title), el('span', 'kb-mono', projectName(session.projectId)));
-      mountButton(row, { label: 'Open chat', size: 'sm', onClick: () => { close(); void host.openSession(id).catch(notify); } });
+      mountButton(row, { label: t('common.openChat'), size: 'sm', onClick: () => { close(); void host.openSession(id).catch(notify); } });
       dialog.append(row);
     }
-    closeButton(dialog, 'Close', close);
+    closeButton(dialog, t('common.close'), close);
     root.append(overlay);
   };
 
@@ -551,7 +642,7 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
 
     const titleRow = el('div', 'kb-row between');
     const titleWrap = el('div', 'kb-card-title-wrap');
-    if (frontier) titleWrap.append(el('span', 'kb-next', 'Next'));
+    if (frontier) titleWrap.append(el('span', 'kb-next', t('board.next')));
     titleWrap.append(el('div', 'kb-card-title', entry.ticket.title));
     titleRow.append(titleWrap);
     if (entry.ticket.number) titleRow.append(el('span', 'kb-card-number', `#${entry.ticket.number}`));
@@ -560,11 +651,15 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
     const meta = el('div', 'kb-card-meta');
     if (entry.ticket.type) meta.append(el('span', 'kb-badge', entry.ticket.type));
     if (entry.ticket.status) meta.append(el('span', 'kb-muted', entry.ticket.status));
-    if (link?.sessionId) meta.append(el('span', 'kb-mono', `session:${link.sessionId.slice(0, 8)}`));
-    if (entry.ticket.blockedBy.length) meta.append(el('span', 'kb-muted', `blocked by ${entry.ticket.blockedBy.map((ref) => `#${ref.number}`).join(', ')}`));
+    if (link?.sessionId) meta.append(el('span', 'kb-mono', t('board.sessionTag', { id: link.sessionId.slice(0, 8) })));
+    if (entry.ticket.blockedBy.length) {
+      meta.append(el('span', 'kb-muted', t('board.blockedBy', {
+        refs: entry.ticket.blockedBy.map((ref) => `#${ref.number}`).join(', '),
+      })));
+    }
     card.append(meta);
 
-    if (link?.needsAttentionSince) card.append(el('p', 'kb-card-attention', 'Agent needs attention.'));
+    if (link?.needsAttentionSince) card.append(el('p', 'kb-card-attention', t('board.attention')));
     if (entry.ticket.conflicts.length) card.append(el('p', 'kb-card-conflict', entry.ticket.conflicts.join(' · ')));
 
     card.addEventListener('click', (event) => {
@@ -573,7 +668,7 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
     });
     if (link?.sessionId) {
       const chat = mountButton(card, {
-        label: 'Chat', variant: 'ghost', size: 'xs',
+        label: t('common.chat'), variant: 'ghost', size: 'xs',
         onClick: () => {
           markReviewed(entry);
           void host.openSession(link.sessionId!).catch(notify);
@@ -604,17 +699,22 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
       const node = el('div', 'kb-column');
       node.dataset.column = column;
       const head = el('div', 'kb-column-head');
-      head.append(el('span', 'kb-column-title', TICKET_COLUMN_LABELS[column]));
+      head.append(el('span', 'kb-column-title', ticketColumnLabel(column, props.language)));
       head.append(el('span', 'kb-column-count', String(columns[column].length)));
       const body = el('div', 'kb-column-body');
       node.append(head, body);
-      if (columns[column].length === 0) body.append(el('div', 'kb-column-empty', column === 'ready' ? 'No ticket is ready' : 'Nothing here'));
+      if (columns[column].length === 0) {
+        body.append(el('div', 'kb-column-empty', column === 'ready' ? t('board.noTicketReady') : t('board.nothingHere')));
+      }
       for (const entry of columns[column]) body.append(renderCard(entry, frontier.has(entry.ticket.path)));
       wireDropZone(node, body, column, () => columns[column]);
       columnsRoot.append(node);
     }
     const ready = frontier.size;
-    queueNote.textContent = `${visible.length} ticket${visible.length === 1 ? '' : 's'} shown · ${ready} ready next${unlinkedSessions.size ? ` · ${unlinkedSessions.size} unlinked session${unlinkedSessions.size === 1 ? '' : 's'}` : ''}`;
+    const ticketWord = t(visible.length === 1 ? 'common.ticket.one' : 'common.ticket.many');
+    const sessionWord = t(unlinkedSessions.size === 1 ? 'common.session.one' : 'common.session.many');
+    queueNote.textContent = t('board.queue', { shown: visible.length, tickets: ticketWord, ready })
+      + (unlinkedSessions.size ? t('board.unlinkedSuffix', { count: unlinkedSessions.size, sessions: sessionWord }) : '');
     if (state.all.length === 0) {
       emptySlot.append(buildEmptyState());
     }
@@ -622,15 +722,15 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
 
   const buildEmptyState = () => {
     const wrap = el('div', 'kb-empty-state');
-    wrap.append(el('h2', '', 'No tickets found'));
+    wrap.append(el('h2', '', t('board.noTickets')));
     const spec = state.context.find((ticket) => ticket.kind === 'spec' && /(^|\/)spec\.md$/i.test(ticket.path));
     if (spec) {
-      wrap.append(el('p', '', 'This project has a spec but no issue files yet. Ask an agent to turn the spec into tickets.'));
+      wrap.append(el('p', '', t('board.specNoIssues')));
       const prompt = `/to-tickets ${spec.path}\n\nFeature: ${spec.feature}\nSpec: ${spec.path}`;
-      mountButton(wrap, { label: 'Break a spec into tickets', variant: 'secondary', onClick: () => openSetup(prompt) });
+      mountButton(wrap, { label: t('board.breakSpec'), variant: 'secondary', onClick: () => openSetup(prompt) });
     } else {
-      wrap.append(el('p', '', 'This project has a .scratch directory, but no spec or issue files yet. Start the setup workflow, or write a spec with the to-spec skill.'));
-      mountButton(wrap, { label: 'Set up ticket workflow', onClick: () => openSetup() });
+      wrap.append(el('p', '', t('board.scratchNoSpec')));
+      mountButton(wrap, { label: t('board.setupWorkflow'), onClick: () => openSetup() });
     }
     return wrap;
   };
@@ -661,7 +761,7 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
       if (!entry) return;
       const destination = target;
       if (destination === 'blocked') {
-        showBanner('Blocked is derived', 'Change the ticket\'s Blocked by line instead of dragging into Blocked.', 'info');
+        showBanner(t('board.blockedDerivedTitle'), t('board.blockedDerivedBody'), 'info');
         return;
       }
       const status = destination === 'done' ? 'resolved'
@@ -670,7 +770,7 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
             : destination === 'ready' ? statusForTriageRole('ready-for-agent', state.labels)
               : statusForTriageRole('ready-for-human', state.labels);
       if (entry.ticket.status === status) return;
-      void applyStatus(entry, status, 'move').catch(notify);
+      void applyStatus(entry, status, COMMIT_ACTIONS.move).catch(notify);
     });
   };
 
@@ -686,7 +786,8 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
     }
   };
 
-  const readProject = async (directory: string): Promise<TicketBundle> => fetchTicketBundle(host, directory);
+  const readProject = async (directory: string): Promise<TicketBundle> =>
+    fetchTicketBundle(host, directory, props.language);
 
   const reload = async () => {
     const generation = ++loadGeneration;
@@ -695,14 +796,24 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
       const [loadedPrefs, index] = await Promise.all([loadPrefs(host), loadTicketLinks(host)]);
       if (generation !== loadGeneration) return;
       prefs = loadedPrefs;
+      if (prefs.language !== props.languagePreference) {
+        // Another tab changed the stored preference. Rebuild once with the new language.
+        props.onLanguageChange(prefs.language);
+        return;
+      }
+      languageSelect.update({ value: prefs.language });
       links = new Map(index.links.map((link) => [linkId(link.projectId, link.path), link]));
       if (index.failedKeys.length) {
-        showBanner('Some ticket links could not be loaded', `${index.failedKeys.length} link record(s) were skipped; ticket files are untouched.`, 'warning');
+        showBanner(
+          t('board.someLinksFailedTitle'),
+          t('board.someLinksFailedBody', { count: index.failedKeys.length }),
+          'warning',
+        );
       }
 
       if (!projects.length) {
         state = emptyState();
-        renderEmpty('Choose a project', 'No OpenChamber project is available yet.');
+        renderEmpty(t('board.chooseProjectTitle'), t('board.chooseProjectBody'));
         return;
       }
       const validProject = projects.some((project) => project.id === prefs.projectId) ? prefs.projectId : projects[0]!.id;
@@ -711,16 +822,21 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
       projectSelect.update({ value: validProject, options: projectOptions() });
       searchField.update({ value: prefs.query });
       const directory = projectDirectory(validProject);
-      if (!directory) { renderEmpty('Project directory unavailable', 'OpenChamber did not report a directory for this project.'); return; }
+      if (!directory) {
+        renderEmpty(t('board.projectDirectoryTitle'), t('board.projectDirectoryBody'));
+        return;
+      }
 
-      const tracker = await fetchTrackerInfo(host, directory);
+      const tracker = await fetchTrackerInfo(host, directory, props.language);
       if (tracker.kind === 'github' || tracker.kind === 'gitlab') {
         state = emptyState();
         updateBadge();
         const wrap = el('div', 'kb-empty-state');
-        wrap.append(el('h2', '', 'This project uses a remote tracker'));
-        wrap.append(el('p', '', tracker.reason ?? `Detected ${tracker.kind}. Remote tracker support needs the matching CLI permission (gh or glab); until then this board reads the local Markdown tracker in .scratch.`));
-        mountButton(wrap, { label: 'Set up local tickets', variant: 'secondary', onClick: openSetup });
+        wrap.append(el('h2', '', t('board.remoteTrackerTitle')));
+        wrap.append(el('p', '', t('board.remoteTrackerBody', {
+          kind: tracker.kind === 'github' ? 'GitHub' : 'GitLab',
+        })));
+        mountButton(wrap, { label: t('board.setUpLocalTickets'), variant: 'secondary', onClick: openSetup });
         emptySlot.replaceChildren(wrap);
         columnsRoot.replaceChildren();
         featureSelect.update({ value: ALL_FEATURES, options: featureOptions() });
@@ -732,17 +848,17 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
       if (generation !== loadGeneration) return;
       if (bundle.state === 'unavailable') {
         state = emptyState();
-        renderEmpty('The local ticket service is not available', bundle.message);
-        showBanner('Local service unavailable', 'Approve this extension\'s service in Settings → Extensions, then Refresh.', 'warning');
+        renderEmpty(t('board.serviceUnavailableTitle'), bundle.message);
+        showBanner(t('board.serviceUnavailableTitle'), t('board.serviceUnavailableBody'), 'warning');
         return;
       }
       if (bundle.state === 'unconfigured') {
         state = emptyState();
         updateBadge();
         const wrap = el('div', 'kb-empty-state');
-        wrap.append(el('h2', '', 'No ticket workflow in this project'));
-        wrap.append(el('p', '', 'There is no .scratch directory. The board never creates one for you; an agent can run the setup skill and do it.'));
-        mountButton(wrap, { label: 'Set up ticket workflow', onClick: openSetup });
+        wrap.append(el('h2', '', t('board.noWorkflowTitle')));
+        wrap.append(el('p', '', t('board.noWorkflowBody')));
+        mountButton(wrap, { label: t('board.setupWorkflow'), onClick: openSetup });
         emptySlot.replaceChildren(wrap);
         columnsRoot.replaceChildren();
         queueNote.textContent = '';
@@ -765,12 +881,12 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
       };
       await reconcileLinks(index.links, entries, bundle.complete);
       featureSelect.update({ value: feature, options: featureOptions() });
-      if (bundle.warnings.length) showBanner('Some ticket files were skipped', bundle.warnings.join(' · '), 'warning');
+      if (bundle.warnings.length) showBanner(t('board.someFilesSkipped'), bundle.warnings.join(' · '), 'warning');
       render();
       if (prefs.openTicketPath && entries.some((entry) => entry.ticket.path === prefs.openTicketPath)) openDetail(prefs.openTicketPath);
     } catch (error) {
       state = emptyState();
-      renderEmpty('Could not load tickets', describeHostError(error));
+      renderEmpty(t('board.couldNotLoad'), describeHostError(error, props.language));
       notify(error);
     } finally {
       refresh.update({ loading: false });
@@ -781,7 +897,7 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
     columnsRoot.replaceChildren();
     const wrap = el('div', 'kb-empty-state');
     wrap.append(el('h2', '', title), el('p', '', body));
-    mountButton(wrap, { label: 'Refresh', variant: 'secondary', onClick: () => { void reload(); } });
+    mountButton(wrap, { label: t('common.refresh'), variant: 'secondary', onClick: () => { void reload(); } });
     emptySlot.replaceChildren(wrap);
     queueNote.textContent = '';
   };
@@ -790,7 +906,7 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
   void watchProjects(host, (snapshot) => {
     if (disposed) return;
     if (snapshot.state === 'error') {
-      showBanner('Projects unavailable', 'OpenChamber did not report its project list.', 'warning');
+      showBanner(t('board.projectsUnavailableTitle'), t('board.projectsUnavailableBody'), 'warning');
       return;
     }
     const before = projects.map((project) => project.id).join(',');
@@ -801,7 +917,7 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
     else render();
   }).then((stop) => { if (disposed) stop(); else stopProjects = stop; }, (error) => { if (!disposed) notify(error); });
 
-  const spinner = mountSpinner(spinnerSlot, { label: 'Loading tickets…' });
+  const spinner = mountSpinner(spinnerSlot, { label: t('board.loadingTickets') });
   void reload().finally(() => {
     spinner.dispose();
     spinnerSlot.hidden = true;
@@ -820,8 +936,8 @@ export const mountTicketBoard = (host: BoardHost, root: Element) => {
 
   const footerActions = el('div', 'kb-row');
   footer.append(footerActions);
-  mountButton(footerActions, { label: 'Unlinked sessions', variant: 'ghost', size: 'sm', onClick: openUnlinked });
-  mountButton(footerActions, { label: 'Set up tickets', variant: 'ghost', size: 'sm', onClick: openSetup });
+  mountButton(footerActions, { label: t('board.unlinkedSessions'), variant: 'ghost', size: 'sm', onClick: openUnlinked });
+  mountButton(footerActions, { label: t('board.setUpTickets'), variant: 'ghost', size: 'sm', onClick: openSetup });
 
   return {
     dispose: () => {

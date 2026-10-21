@@ -1,5 +1,6 @@
 import type { HostClient } from '@openchamber/sdk';
 import { buildBaseBranchOptionsFromService, parseBranchServiceResponse } from '../domain/worktree.ts';
+import type { Language } from '../i18n.ts';
 
 export type BranchServiceHost = Pick<HostClient, 'serviceRequest'>;
 
@@ -12,12 +13,16 @@ export type BranchServiceHost = Pick<HostClient, 'serviceRequest'>;
  * worktree-derived list from `buildBaseBranchOptions` — and this is never
  * surfaced to the user as an error.
  */
-export const fetchServiceBranches = async (host: BranchServiceHost, directory: string) => {
+export const fetchServiceBranches = async (
+  host: BranchServiceHost,
+  directory: string,
+  language: Language = 'en',
+) => {
   try {
     const result = await host.serviceRequest({ method: 'GET', path: '/branches', query: { directory } });
     if (result.status !== 200) return null;
     const branches = parseBranchServiceResponse(result.body);
-    return branches ? buildBaseBranchOptionsFromService(branches) : null;
+    return branches ? buildBaseBranchOptionsFromService(branches, language) : null;
   } catch {
     return null;
   }

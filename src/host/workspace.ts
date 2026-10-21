@@ -1,4 +1,5 @@
 import { HostRequestError, type GuestProject, type GuestSessionRecord, type GuestSessionsSnapshot, type GuestWorktree, type GuestWorktreesSnapshot, type HostClient, type StartSessionSent } from '@openchamber/sdk';
+import { translate, type Language } from '../i18n.ts';
 
 export type WorkspaceHost = Pick<HostClient, 'onProjects' | 'onSessions' | 'onWorktrees' | 'openSession'>;
 
@@ -85,14 +86,14 @@ export const projectForDirectory = (projects: readonly GuestProject[], directory
     .sort((a, b) => b.directory.length - a.directory.length)[0] ?? null;
 };
 
-export const describeHostError = (error: unknown) => {
+export const describeHostError = (error: unknown, language: Language = 'en') => {
   if (error instanceof HostRequestError) {
     switch (error.code) {
-      case 'NOT_GRANTED': return 'This needs the "sessions" permission. Approve it in Settings — Extensions.';
-      case 'DISABLED': return 'The extension is paused in Settings — Extensions.';
-      case 'HOST_UNAVAILABLE': return 'Not running inside OpenChamber.';
-      case 'HOST_TIMEOUT': return 'OpenChamber did not answer in time. Try again.';
-      case 'NOT_FOUND': return 'That session no longer exists.';
+      case 'NOT_GRANTED': return translate(language, 'error.notGranted');
+      case 'DISABLED': return translate(language, 'error.disabled');
+      case 'HOST_UNAVAILABLE': return translate(language, 'error.hostUnavailable');
+      case 'HOST_TIMEOUT': return translate(language, 'error.timeout');
+      case 'NOT_FOUND': return translate(language, 'error.notFound');
       default: return `${error.code}: ${error.message}`;
     }
   }
@@ -106,11 +107,11 @@ export const describeHostError = (error: unknown) => {
  * user. The description stays safe on the ticket either way; it's not lost,
  * only not delivered automatically.
  */
-export const describeStartSessionDelivery = (sent: StartSessionSent): string | null => {
+export const describeStartSessionDelivery = (sent: StartSessionSent, language: Language = 'en'): string | null => {
   switch (sent) {
     case 'sent': return null;
-    case 'no-model': return 'no model is configured for this session';
-    case 'skipped': return "OpenChamber skipped sending it — the session may be waiting on something else first (check the chat)";
-    case 'failed': return 'OpenChamber reported the send itself failed';
+    case 'no-model': return translate(language, 'delivery.noModel');
+    case 'skipped': return translate(language, 'delivery.skipped');
+    case 'failed': return translate(language, 'delivery.failed');
   }
 };

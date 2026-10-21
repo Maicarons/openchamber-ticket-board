@@ -1,4 +1,5 @@
 import type { GuestSessionWorktree, GuestWorktree, StartSessionResult } from '@openchamber/sdk';
+import { translate, type Language } from '../i18n.ts';
 import type { TicketWorktree } from './ticketIndex.ts';
 
 export const DESTINATION_ROOT = 'root';
@@ -44,9 +45,12 @@ export const branchNameConflictsWithBase = (branchName: string, resolvedBaseBran
  * only `GuestWorktree.branch`, one per *existing* worktree. Used when the
  * local git-branch service (below) isn't approved or available.
  */
-export const buildBaseBranchOptions = (worktrees: readonly GuestWorktree[]) => {
+export const buildBaseBranchOptions = (worktrees: readonly GuestWorktree[], language: Language = 'en') => {
   const branches = [...new Set(worktrees.map((w) => w.branch).filter((b): b is string => Boolean(b)))].sort();
-  return [{ id: DEFAULT_BASE_BRANCH_OPTION, label: 'Use project default' }, ...branches.map((branch) => ({ id: branch, label: branch }))];
+  return [
+    { id: DEFAULT_BASE_BRANCH_OPTION, label: translate(language, 'worktree.useProjectDefault') },
+    ...branches.map((branch) => ({ id: branch, label: branch })),
+  ];
 };
 
 /** Whether the dropdown has any real branch to offer beyond "Use project default". */
@@ -102,17 +106,22 @@ export const parseGitRefOutput = (stdout: string): ServiceBranch[] => {
  * service lists them most-recently-active first, more useful than A→Z for
  * picking a base branch.
  */
-export const buildBaseBranchOptionsFromService = (branches: readonly ServiceBranch[]) => {
+export const buildBaseBranchOptionsFromService = (branches: readonly ServiceBranch[], language: Language = 'en') => {
   const seen = new Set<string>();
   const local: Array<{ id: string; label: string; hint?: string }> = [];
   const remote: Array<{ id: string; label: string; hint?: string }> = [];
+  const remoteHint = translate(language, 'worktree.remote');
   for (const branch of branches) {
     if (!branch.name || seen.has(branch.name)) continue;
     seen.add(branch.name);
-    const option = { id: branch.name, label: branch.name, hint: branch.kind === 'remote' ? 'remote' : undefined };
+    const option = { id: branch.name, label: branch.name, hint: branch.kind === 'remote' ? remoteHint : undefined };
     (branch.kind === 'remote' ? remote : local).push(option);
   }
-  return [{ id: DEFAULT_BASE_BRANCH_OPTION, label: 'Use project default' }, ...local, ...remote];
+  return [
+    { id: DEFAULT_BASE_BRANCH_OPTION, label: translate(language, 'worktree.useProjectDefault') },
+    ...local,
+    ...remote,
+  ];
 };
 
 /** Validates the service's `GET /branches` body. `null` means it wasn't a usable answer — treat exactly like the service being unavailable. */

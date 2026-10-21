@@ -1,6 +1,7 @@
 import { isClaimedStatus, isResolvedStatus, ticketRef, type Ticket } from './ticket.ts';
 import { blockingReasons, isFrontierCandidate } from './ticketColumns.ts';
 import { triageRoleForStatus, type TriageLabels } from './triageLabels.ts';
+import { translator, type Language } from '../i18n.ts';
 
 /**
  * The board is a launcher, not an agent. Each action only writes a prompt into
@@ -65,14 +66,18 @@ const triageNeeded = (ticket: Ticket, labels?: TriageLabels): boolean => {
  * Every action carries the reason it cannot run right now, so the button can
  * be disabled with an explanation instead of failing after a click.
  */
-export const actionsForTicket = (ticket: Ticket, context: ActionContext): TicketAction[] => {
+export const actionsForTicket = (
+  ticket: Ticket,
+  context: ActionContext,
+  language: Language = 'en',
+): TicketAction[] => {
+  const t = translator(language);
   const labels = context.labels;
-  const blocked = blockingReasons(ticket, context.siblings, labels);
+  const blocked = blockingReasons(ticket, context.siblings, labels, language);
   const resolved = isResolvedStatus(ticket.status) || triageRoleForStatus(ticket.status, labels) === 'wontfix';
   const claimed = isClaimedStatus(ticket.status);
   const frontier = isFrontierCandidate(ticket, context.siblings, labels);
   const specPath = context.specPath ?? (context.feature ? `.scratch/${context.feature}/spec.md` : 'spec.md');
-  const mapPath = context.mapPath ?? (context.feature ? `.scratch/${context.feature}/map.md` : 'map.md');
 
   const action = (
     id: TicketActionId,
@@ -92,74 +97,80 @@ export const actionsForTicket = (ticket: Ticket, context: ActionContext): Ticket
   return [
     action(
       'triage',
-      'Triage',
+      t('action.triage'),
       'triage',
       refOf(ticket),
-      resolved ? 'Already resolved.' : claimed ? 'Claimed by an agent.' : triageNeeded(ticket, context.labels) ? null : `Already triaged (${ticket.status}).`,
+      resolved
+        ? t('action.reason.resolved')
+        : claimed
+          ? t('action.reason.claimed')
+          : triageNeeded(ticket, context.labels)
+            ? null
+            : t('action.reason.alreadyTriaged', { status: ticket.status ?? '' }),
     ),
     action(
       'implement',
-      'Implement',
+      t('action.implement'),
       'implement',
       ticket.path,
       resolved
-        ? 'Already resolved.'
+        ? t('action.reason.resolved')
         : claimed
-          ? 'Already claimed by an agent.'
+          ? t('action.reason.alreadyClaimed')
           : blocked.length
-            ? `Blocked: ${blocked.join('; ')}`
+            ? t('action.reason.blocked', { reasons: blocked.join('; ') })
             : frontier
               ? null
-              : `Status is ${ticket.status ?? 'empty'}; move it to ready-for-agent first.`,
+              : t('action.reason.notReady', { status: ticket.status ?? t('action.emptyStatus') }),
     ),
     action(
       'implement-spec',
-      'Implement spec',
+      t('action.implementSpec'),
       'implement-spec',
       specPath,
       !context.feature
-        ? 'This ticket has no feature directory.'
+        ? t('action.reason.noFeature')
         : !context.hasSpec
-          ? `No spec.md in .scratch/${context.feature}/ yet.`
+          ? t('action.reason.noSpec', { feature: context.feature })
           : null,
     ),
     action(
       'to-tickets',
-      'Break into tickets',
+      t('action.toTickets'),
       'to-tickets',
       specPath,
       !context.feature
-        ? 'This ticket has no feature directory.'
+        ? t('action.reason.noFeature')
         : !context.hasSpec
-          ? `No spec.md in .scratch/${context.feature}/ yet.`
+          ? t('action.reason.noSpec', { feature: context.feature })
           : null,
     ),
     action(
       'to-spec',
-      'Write spec',
+      t('action.toSpec'),
       'to-spec',
       context.feature,
-      !context.feature ? 'This ticket has no feature directory.' : null,
+      !context.feature ? t('action.reason.noFeature') : null,
       null,
     ),
     action(
       'wayfinder',
-      'Wayfinder',
+      t('action.wayfinder'),
       'wayfinder',
       context.feature || ticket.path,
-      resolved ? 'Already resolved.' : null,
+      resolved ? t('action.reason.resolved') : null,
       null,
     ),
     action(
       'code-review',
-      'Code review',
+      t('action.codeReview'),
       'code-review',
       context.reviewBase?.trim() || 'main',
-      !context.feature ? 'This ticket has no feature directory.' : resolved || claimed ? null : 'Nothing is implemented for this ticket yet.',
+      !context.feature ? t('action.reason.noFeature') : resolved || claimed ? null : t('action.reason.nothingImplemented'),
     ),
     action(
       'handoff',
-      'Handoff',
+      t('action.handoff'),
       'handoff',
       ticket.path,
       null,
@@ -167,5 +178,5 @@ export const actionsForTicket = (ticket: Ticket, context: ActionContext): Ticket
   ];
 };
 
-export const enabledActions = (ticket: Ticket, context: ActionContext): TicketAction[] =>
-  actionsForTicket(ticket, context).filter((action) => action.disabledReason === null);
+export const enabledActions = (ticket: Ticket, context: ActionContext, language: Language = 'en'): TicketAction[] =>
+  actionsForTicket(ticket, context, language).filter((action) => action.disabledReason === null);

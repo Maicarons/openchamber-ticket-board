@@ -55,8 +55,9 @@ src/
     sessionSignal.ts      # session activity → attention marker
     unlink.ts             # whether a linked session/worktree provably still exists
     worktree.ts           # branch list parsing and start-session worktree shape
+  i18n.ts                 # English/Chinese dictionaries, locale resolution, interpolation
   store/
-    prefs.ts              # selected project/feature/query/open ticket
+    prefs.ts              # selected project/feature/query/language/open ticket
     ticketStore.ts        # one host.storage record per project + ticket path
   host/
     workspace.ts          # narrow SDK wrappers with settled promises
@@ -140,6 +141,14 @@ The **frontier** is computed per feature/effort: the lowest-numbered ticket that
 
 Dragging is a status change only. Dropping into a derived column (**Blocked**) is refused with an explanation; ordering is never stored and never dragged. Cross-feature movement is not available because columns do not encode a feature.
 
+## Language
+
+`src/i18n.ts` holds typed English and Simplified Chinese dictionaries and a small `{placeholder}` interpolator. The host's `locale` drives the default; `prefs.language` is `auto`, `en` or `zh`, and the page's toolbar selector persists it. The rail panel reads the same preference, so both surfaces agree after a reload.
+
+The page remounts its view when the language changes. That rebuilds every mounted control with new labels instead of trying to patch each widget in place; the old view's watchers and dialogs are disposed first.
+
+Only UI text is translated. Ticket titles, bodies, comments, `Status:` values, triage labels, file paths, skill prompts and git commit messages are repository data and stay exactly as written. Column labels, action labels, disabled reasons, diff summaries, browser-side errors and empty states are translated. Domain functions accept an optional language parameter that defaults to English, keeping their tests and callers stable.
+
 ## Writes
 
 Every write follows the same path:
@@ -219,7 +228,7 @@ On load, `orphanLinkKeys` deletes links whose ticket is absent **only when the s
 
 ### Preferences
 
-A single `prefs` record: selected project, feature, search text, and the ticket whose detail is open. This lets the board return to the same view after Open Chat.
+A single `prefs` record: selected project, feature, search text, language preference, and the ticket whose detail is open. This lets the board return to the same view and language after Open Chat.
 
 ## Session lifecycle
 
@@ -286,7 +295,7 @@ npm run check
 
 runs `tsc --noEmit`, `node --test --experimental-strip-types test/*.test.ts`, and the esbuild build for panel, page and service.
 
-Unit coverage includes path parsing, field spans, CRLF preservation, diff generation, blocker resolution per feature, frontier selection, custom triage vocabularies, append-only comments/answers, index keying and orphan rules, session attention mapping, link-health rules and worktree picker conversions.
+Unit coverage includes path parsing, field spans, CRLF preservation, diff generation, blocker resolution per feature, frontier selection, custom triage vocabularies, append-only comments/answers, index keying and orphan rules, session attention mapping, link-health rules, worktree picker conversions, locale resolution and both translation dictionaries.
 
 ## License
 
