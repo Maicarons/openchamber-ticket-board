@@ -85,6 +85,8 @@ test('parseBlockedBy accepts NN, #NN, None and ignores prose', () => {
     { number: '12', value: 12 },
   ]);
   assert.deepEqual(parseBlockedBy('None (can start immediately)'), []);
+  assert.deepEqual(parseBlockedBy('-'), []);
+  assert.deepEqual(parseBlockedBy('—'), []);
   assert.deepEqual(parseBlockedBy(''), []);
   assert.deepEqual(parseBlockedBy('03 and 04'), [
     { number: '03', value: 3 },

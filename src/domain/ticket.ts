@@ -200,7 +200,7 @@ export const parseTicketField = (line: string, lineIndex = 0): TicketField | nul
 
 export const parseBlockedBy = (value: string): BlockedByRef[] => {
   const trimmed = value.trim();
-  if (!trimmed || /^(none|n\/a|—|-)\b/i.test(trimmed)) return [];
+  if (!trimmed || /^(none|n\/a)\b/i.test(trimmed) || /^[—–-]$/.test(trimmed)) return [];
   const refs: BlockedByRef[] = [];
   const seen = new Set<number>();
   for (const chunk of trimmed.replace(/\s+and\s+/gi, ',').split(/[,;]/)) {
