@@ -1,8 +1,14 @@
 # Architecture
 
-A local-first Kanban board extension for OpenChamber, built with the official `@openchamber/sdk`. All task and preference data lives in `host.storage` on the connected OpenChamber server — nothing is sent anywhere else, and no capability beyond what's listed below is used.
+This is a local-first ticket board for OpenChamber. It reads Matt Pocock's Markdown ticket workflow, derives all six board columns from the ticket files, and links a ticket to a real OpenCode session. The files are the source of truth; the extension stores only session links and board preferences.
 
-Requires OpenChamber `>=1.24.0` — the Extensions SDK (`Settings → Extensions`, panels, pages, `host.storage`) doesn't exist in earlier versions.
+There are three runtimes:
+
+- **Panel and page** — sandboxed browser bundles built from `src/panel.ts` and `src/page.ts`.
+- **Host service** — a small Node HTTP server built from `src/service/main.ts`, spawned and proxied by OpenChamber on loopback.
+- **Domain** — pure TypeScript with no SDK or DOM imports, shared by both.
+
+The service is the only code with filesystem access. The page never sees a service token or dials the port itself.
 
 ## Manifest and capabilities
 
@@ -15,7 +21,11 @@ Requires OpenChamber `>=1.24.0` — the Extensions SDK (`Settings → Extensions
       "panel": { "id": "kanban-board", "name": "Kanban", "icon": "task", "entry": "panel/index.html" },
       "page": { "entry": "panel/page.html", "title": "Kanban board" },
       "capabilities": ["sessions", "prompt"],
-      "service": { "entry": "service/main.js", "runtime": "host", "permissions": { "exec": ["git"] } }
+      "service": {
+        "entry": "service/main.js",
+        "runtime": "host",
+        "permissions": { "exec": ["git"] }
+      }
     }
   }
 }
@@ -23,182 +33,261 @@ Requires OpenChamber `>=1.24.0` — the Extensions SDK (`Settings → Extensions
 
 | Capability | Used for |
 |---|---|
-| `sessions` | `listProjects`/`onProjects`, `listSessions`/`onSessions`, `listWorktrees`/`onWorktrees`, `startSession`, `openSession` — reading project/session/worktree state and creating or opening sessions. |
-| `prompt` | Permits `startSession` to send its `text` field as the agent's first message. The returned `sent` value is checked because session creation can succeed without the message being delivered. |
-| `service` (auto-added by declaring `contributes.service`) | The local git-branch-reading service, see below. |
+| `sessions` | Reading projects, sessions and worktrees; creating and opening sessions. |
+| `prompt` | Sending the composed prompt as a new session's first message. `startSession` can create a session without delivering the text, so the result's `sent` field is checked. |
+| `service` | The local read/write service. Declaring it adds it to the extension's approval prompt. |
 
-**Capability approval is all-or-nothing.** The host's own grant endpoint (`PUT /api/guests/:id/capabilities`) accepts only the full requested list or `[]` — there is no partial grant. Installing this extension means accepting all three capabilities together; there is no way to get the Kanban board without also being asked about the local service.
+Approval is all-or-nothing at the host: the user grants the full capability list or none of it.
 
 ## File structure
 
-```
-openchamber-kanban/
-  package.json
-  src/
-    domain/
-      task.ts          # Task type, validation, createTask/applyPatch/parseTask — pure, no host
-      board.ts          # column grouping, filtering, drag-and-drop rank math, Review sort — pure
-      sync.ts            # agent activity → task status mapping — pure
-      worktree.ts         # worktree/branch picker logic, local service response parsing — pure
-      unlink.ts            # link health: whether a linked session/worktree provably still exists — pure
-      autoTask.ts          # orphan-session eligibility + initial status + title — pure
-    store/
-      taskStore.ts      # one host.storage key per task: task:<id>
-      prefs.ts            # board filters + last-open task: host.storage key "prefs"
-      orphanWatermark.ts    # "going forward" cutoff timestamp: host.storage key "orphan-watermark"
-    host/
-      workspace.ts      # host.listProjects/onProjects/onSessions/onWorktrees/openSession wrappers
-      sessionSync.ts      # live onSessions watcher → status sync + deleted/archived session unlink
-      worktreeSync.ts       # live onWorktrees watcher → worktree-deleted unlinks
-      orphanSessions.ts     # live onProjects+onSessions watcher → sessions with no task yet
-      branchService.ts        # calls the local git-branch service; null on any failure
-    ui/
-      dnd.ts            # drop-target math — pure, no DOM
-      styles.ts           # CSS using the host's --oc-* theme tokens
-      dom.ts                # element() helper
-      board.ts               # the Kanban board
-      detail.ts                # task detail dialog
-    page.ts             # full-screen page entry (contributes.page)
-    panel.ts              # rail panel entry: summary + badge
-    service/
-      main.ts           # local git-branch service source (Node, not browser)
-  panel/
-    index.html, page.html   # HTML shells
-    main.js, page.js          # esbuild IIFE output
-  service/
-    main.js             # esbuild Node/ESM output of src/service/main.ts
-  test/                 # node:test unit tests for domain/, store/, host/
-  scripts/build.mjs      # esbuild: browser IIFE for panel/page, Node/ESM for the service
+```text
+src/
+  domain/                 # pure, no host and no DOM
+    ticket.ts             # parse a ticket file, its fields, sections and path
+    ticketColumns.ts      # blockers, six columns, per-feature frontier
+    ticketBoard.ts        # board cards, feature grouping, filtering, drop targets
+    ticketActions.ts      # eight skill actions, prompts and disabled reasons
+    ticketEdit.ts         # append-only field/section edits and combined preview
+    unifiedDiff.ts        # git-shaped unified diff for confirmation
+    triageLabels.ts       # docs/agents/triage-labels.md → role vocabulary
+    ticketIndex.ts        # storage key schema, link validation, orphan rules
+    sessionSignal.ts      # session activity → attention marker
+    unlink.ts             # whether a linked session/worktree provably still exists
+    worktree.ts           # branch list parsing and start-session worktree shape
+  store/
+    prefs.ts              # selected project/feature/query/open ticket
+    ticketStore.ts        # one host.storage record per project + ticket path
+  host/
+    workspace.ts          # narrow SDK wrappers with settled promises
+    ticketService.ts      # typed service client; degrades to empty states
+    sessionSync.ts        # live attention and deleted/archived session handling
+    worktreeSync.ts       # live deleted-worktree handling
+    orphanSessions.ts     # live list of sessions no ticket points at
+    branchService.ts      # best-effort local service branch list
+  ui/
+    ticketBoard.ts        # board page, dialogs, writes, drag, session launch
+    ticketDetail.ts       # ticket fields, outcomes, actions, start/link session
+    diffDialog.ts         # diff preview + confirmation
+    styles.ts, dom.ts
+  page.ts                 # full-screen page entry
+  panel.ts                # narrow rail summary
+  service/main.ts         # host service source
+panel/                    # HTML shells + esbuild output
+service/                  # esbuild Node/ESM output
+test/                     # node:test unit tests
+scripts/build.mjs         # browser IIFE + Node ESM builds
 ```
 
-Layering: `domain/` has no SDK or DOM imports — pure functions, fully unit-tested. `store/` and `host/` depend only on narrow `Pick<HostClient, …>` slices, tested with in-memory fakes. `ui/` is the only layer that touches the DOM.
+Layering rules:
 
-## Task data model
+- `domain/` owns every rule and is fully unit-tested.
+- `store/` and `host/` depend on narrow `Pick<HostClient, …>` slices, not the whole SDK, and are tested with in-memory fakes where they contain logic.
+- `ui/` is the only layer that touches the DOM. It does not reimplement parsing or grouping.
 
-```ts
-type Task = {
-  schemaVersion: 1;
-  id: string;                 // t_<base36 time><6 random chars>
-  title: string;
-  description: string;        // first message requested for the agent; delivery is checked via result.sent
-  status: 'backlog' | 'todo' | 'in_progress' | 'review' | 'done';
-  rank: number;                // fractional, for drag-and-drop ordering within a column
-  projectId: string | null;
-  sourceBranch: string | null;  // unused by current UI; kept for backward compatibility with old records
-  worktree: { directory: string; branch: string | null } | null;
-  sessionId: string | null;
-  createdAt: number;
-  updatedAt: number;
-  needsAttentionSince: number | null;  // set when the Review marker/sort should treat this as unseen
-};
+## Ticket model
+
+A ticket file has this shape:
+
+```markdown
+# 02: Add the parser
+
+Status: ready-for-agent
+Type: task
+Blocked by: 01
+Labels: enhancement
+
+Body prose.
+
+## Comments
+
+### Board — 2026-10-21T10:00:00.000Z
+
+A comment.
+
+## Answer
+
+The decision.
 ```
 
-Stored one task per `host.storage` key (`task:<id>`), so editing one task can never corrupt another, and a malformed record is reported and skipped rather than blocking the rest of the board. Board filters, the currently-open task, and the "going forward" orphan-adoption cutoff are each a separate key (`prefs`, `orphan-watermark`).
+`parseTicket` produces:
+
+- `kind`: `ticket`, `spec`, `map`, or `other`
+- `feature` and `number` from `.scratch/<feature>/issues/<NN>-<slug>.md`
+- `status`, `type`, `blockedBy` refs, labels, title, slug
+- `content` byte-for-byte, plus field spans that let `ticketEdit` replace one value without reserialising the file
+- `comments` and `answer` section text
+- `warnings` for unfamiliar fields and `conflicts` for contradictory ones
+
+A malformed file is still a card with a warning, never a thrown parse error. CRLF and `**Status:**` are supported.
+
+Status words are not hard-coded to one vocabulary. `docs/agents/triage-labels.md` may map the five canonical roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`) to whatever strings the repository uses. Recognised resolved statuses are `resolved`, `done`, `closed`, `cancelled` and `wontfix`. `claimed` and `in-progress` are active work.
 
 ## The board
 
-Full-screen page (`contributes.page`) with a project filter, a search field, and five columns (Backlog, To Do, In Progress, Review, Done). The rail panel is a lightweight read-only summary (open-task count + badge) — the full board can only be opened from the sidebar's Extension pages menu, never from the extension itself.
+Columns, in reading order:
 
-- **Add task** is a single button. A click creates a real, persisted task immediately (title `"New task"`, appended to Backlog) and opens its detail popup for editing — no separate title field in the toolbar.
-- **Drag-and-drop** uses fractional ranks (`rankAtEnd`, `planDrop`), so moving a card only ever rewrites that card and, rarely, a few neighbors whose gap became too small — never the whole column.
-- **Every column has a "Move to" button** in the detail popup, one per status except the task's current one, alongside dragging.
-- **The Review column sorts by urgency**, not rank: whichever task most recently needs attention leads; already-seen tasks sink below and keep normal rank order among themselves. Every other column stays rank-ordered.
+1. **Needs triage** — empty/unknown status or `needs-triage`.
+2. **Needs info** — `needs-info`.
+3. **Ready for agent** — `ready-for-agent` or a claimed/in-progress status.
+4. **Blocked** — any unfinished ticket whose `Blocked by:` is not fully resolved.
+5. **Needs human** — `ready-for-human`.
+6. **Done** — resolved statuses, including `wontfix`.
 
-### The "needs attention" marker
+Precedence is: Done, then Blocked, then status. A blocker must be present in the loaded feature snapshot and resolved; a missing blocker blocks conservatively so an incomplete scan can never invent a frontier.
 
-A task that lands in Review through something other than your own action — the live agent-status sync or auto-adopting a running session — gets `needsAttentionSince` set to that moment, shown as a warning-colored left border on its card. It's cleared the moment you open the task (its chat, or its detail popup) or drag it anywhere yourself. A status change you make deliberately (dragging, or the detail popup's own "Move to Review") never sets the marker — only the two automatic paths do.
+The **frontier** is computed per feature/effort: the lowest-numbered ticket that is ready, has no unresolved blockers, and is not claimed. It carries the **Next** marker. One feature never borrows another feature's ticket numbers. Search narrows the visible cards but does not change the frontier.
 
-## Agent-status sync
+Dragging is a status change only. Dropping into a derived column (**Blocked**) is refused with an explanation; ordering is never stored and never dragged. Cross-feature movement is not available because columns do not encode a feature.
 
-Implemented in `src/domain/sync.ts` (`statusForSession`, pure) and watched live by `src/host/sessionSync.ts` (`createSessionSync`, one `host.onSessions` subscription per project among currently-linked tasks):
+## Writes
 
-| Session activity / outcome | Task moves to |
-|---|---|
-| `running`, `retrying` | In Progress (from any status except Done) |
-| `waiting-question` | Review |
-| `waiting-permission` | Review |
-| `idle` + outcome `completed` | Review |
-| `idle` + outcome `failed` | Review |
-| anything else | no change |
+Every write follows the same path:
 
-A task marked **Done is never moved** by this — only your own "Mark Done" ever sets it. A save failure here doesn't retry on every subsequent snapshot (a live session's `onSessions` snapshot fires continuously while it runs): `lastAttemptedStatus` tracks the status this mount last attempted for a task, and only a genuinely different target status is retried, cleared on `Refresh`/reopen.
+1. The page takes the in-memory ticket snapshot it is displaying.
+2. `previewTicketEdits` applies one or more edits in order and returns the exact `before`, `after`, unified diff and human summary.
+3. `mountDiffDialog` shows the diff. Nothing is written until **Write these changes** is pressed.
+4. `POST /ticket/write` sends `{ directory, path, content, expected }`.
+5. The service resolves the path, reads the current bytes, and rejects with `409` if they are not exactly `expected`.
+6. Only then does it write the previewed bytes.
 
-## Automatic unlinking
+Allowed edits are deliberately narrow:
 
-A task's links must not outlive what they point at. When a session is deleted, the linked task is deleted automatically. When a session is archived, or a worktree is deleted (all from OpenChamber's sidebar), the corresponding link is cleared from the task automatically — `sessionId` for a session, `worktree` for a worktree. The task itself is kept for archive/worktree cases, with its title, column, and description untouched; it simply becomes a plain unstarted card again, so **Start Agent** or **Link an existing session** can be used on it fresh. The status is deliberately left alone too — moving or archiving a card's session is not a status change.
+- replace the value span of `Status:`
+- replace the value span of `Blocked by:`
+- append a block under `## Comments`
+- append a block under `## Answer`
 
-Two mechanisms cover it, because a page-type extension only runs while it is the selected view:
+Status and Blocked by changes never reorder or rewrite the rest of the file. Comments and answers append; they never edit earlier prose. Conflict detection is the protection against overwriting a change made in another editor.
 
-- **Live** — `src/host/sessionSync.ts` reports a deleted or archived session on its existing `onSessions` subscription (no extra subscription); `src/host/worktreeSync.ts` does the same for worktrees via one `onWorktrees` subscription per project holding worktree-linked tasks. `src/domain/unlink.ts` (`sessionLinkState`, `worktreeLinkState`) decides: an archived session (`archivedAt`) is archived; an absent one is deleted only when the snapshot finished loading (`state: 'ready'`) and, for the directory the session was last seen in, the per-directory `coverage` finished too. Anything less is `unknown`, and **unknown never deletes** — an incomplete list is not a disappearance, and a false "gone" would lose the task permanently.
-- **On every load** — `reconcileLinks` in `src/ui/board.ts` runs at the end of every `reload()`, before the orphan watcher starts: for each project holding linked tasks it fetches the current sessions and worktrees once (`fetchSessions`, which returns both active and full top-level session lists, and `fetchWorktrees`) and deletes tasks or clears links that provably no longer resolve. This is what catches the common case — deleting or archiving in the sidebar while the board is closed, where no live watcher was running. It runs before orphan adoption starts so a session whose stale task is being deleted can never also be re-adopted as a duplicate task.
+The page restricts writes to ticket-shaped files. The service additionally confines every path to `<project>/.scratch/` and rejects `..`, absolute paths, symlinks during scans, and non-Markdown files.
 
-Unlinking shows a toast naming the task. On a load-time pass it is one summary toast instead of one per task. A save failure falls back to a full reload, which re-loads the still-linked task and lets the next pass retry.
+### Commits
 
-## Auto-adopting a session with no task
+**Commit this change** is offered after a write and is never automatic. The service runs:
 
-A session with no task pointed at it, created at or after a persisted watermark timestamp, becomes a new task automatically — In Progress while running, Review once it needs attention (question, permission prompt, finished, or failed) — using the same `statusForSession`-derived mapping (`initialStatusForNewSession` in `src/domain/autoTask.ts`), linked to that session, titled from the session's own title (or `"New session in <project>"`/`"New session (<short id>)"` when the host's own id-as-title fallback would otherwise show a raw session id).
-
-- `src/host/orphanSessions.ts` (`watchOrphanSessions`) is a live reporter: one `onSessions` subscription per registered project, reporting every structurally-adoptable session (not a subagent, not archived, not already linked) with a resolvable status, on every snapshot. Sidebar-created sessions are therefore adopted while the board is open and are also found on the next board load if they were created while it was closed.
-- `src/store/orphanWatermark.ts` holds the single cutoff: set once, the first time this feature ever runs, to that moment, and never moved again. Every session's real `createdAt` is compared against it on every board load — this is the only design that works for a page-type extension, since a page only runs while it's the selected main view, and detection cannot happen while you're in a different chat.
-- `attemptedSessions` in `board.ts` guards against retrying a failed adoption on every snapshot tick, cleared on `Refresh`/reopen.
-- `startingAgents` temporarily pauses adoption while a task's `startSession` request is in flight. The host can publish the new session before that request returns its id; once returned, the id is claimed and the originating task is saved with the link before navigation. A final same-session check removes any duplicate card already linked to that session.
-- Subagents and archived sessions are never adopted. A toast announces each adoption.
-
-## Start Agent
-
-Shown in the task detail popup until a session is linked (after that, Open Chat/Unlink instead). Requires a title, description, and project; disabled with an inline reason otherwise, re-evaluated live.
-
-**Start from** is a radio choice:
-- **Project root** — run directly in the main checkout, no worktree.
-- **New branch** — a fresh branch and worktree, based on the branch picked in **Based on**. Shows **Branch name** and a read-only **Folder name** that always mirrors it: `startSession`'s `{ kind: 'new', name, baseBranch }` has one `name` for both, with no way to set a folder name independently.
-- **Existing worktree** — reuse a worktree already checked out (`listWorktrees`). Not the same as "check out any branch that doesn't have a worktree yet" — the SDK has no such mode, only `{ kind: 'existing', directory }` for a worktree that already exists on disk.
-
-**Based on** is a searchable dropdown (`searchable: true`), populated from the local git-branch service when available, or the project's existing worktree branches plus "Use project default" otherwise. A new branch can't be based on itself (`branchNameConflictsWithBase`) — checked before the request is ever sent.
-
-Clicking **Start Agent**:
-1. Passes the title, description, and project currently shown in the dialog, including edits not yet saved with **Save changes**. The description becomes `text`; the current values are also saved to the task as part of the session-link update.
-2. The session title uses the task title. If the title is still the default `"New task"`, `sessionTitleForTask` uses the first line of the description instead. This avoids giving a new session the generic task placeholder as its name.
-3. Builds the `worktree` value (`buildSessionWorktree`) and calls `host.startSession` with `navigation: 'preserve'`. Adoption is paused during that request because the host can publish the new session before the request returns its id.
-4. When a session id returns, it is claimed in `attemptedSessions`, and the existing task is saved with that id, the latest title and description, the project, In Progress status, and its worktree. The save retries three times with backoff (`saveTaskRetrying`). A same-session check removes an already-created duplicate task if one exists.
-5. Checks `result.sent`. If the session was created but the description was not sent (`no-model`, `skipped`, or `failed`), the board shows an error toast. The description remains saved on the task; the SDK has no call to send a message to an arbitrary existing session afterward.
-6. Clears the saved open-task preference and waits for that storage write to finish before calling `host.openSession(result.sessionId)`. The dialog therefore does not reopen when the user returns to the board.
-7. On failure (`sessionId: null`), surfaces the host's own failure reason and keeps the worktree's directory in the message rather than deleting anything.
-
-## The local git-branch service
-
-Declared via `contributes.service` with `permissions.exec: ["git"]` — the only way to list a repository's real branches, since the SDK itself has no API for this (confirmed by enumerating every `HostClient` method).
-
-- `src/service/main.ts`, built to `service/main.js` (Node/ESM target, not the browser build) — a small HTTP server the host spawns and proxies to on `127.0.0.1`. Every request is bearer-authenticated by the host itself; the panel never sees the token or dials the port directly.
-- Runs **exactly one command**: `git -C <directory> for-each-ref --sort=-committerdate --count=200 --format=%(refname) refs/heads refs/remotes` — read-only, most-recently-active branches first, capped at 200, for a project directory the panel already knows about (`path.isAbsolute` checked).
-- `src/host/branchService.ts` (`fetchServiceBranches`) is best-effort: not approved, not running, a bad answer, or any other error all become `null`, never an exception the UI has to handle, because the worktree-derived fallback is a complete, working option on its own.
-
-## Known SDK limitations
-
-- **No API to list a repository's full branch set**, only `GuestWorktree.branch` per existing worktree, or the local service above.
-- **Capability approval is all-or-nothing** across the whole manifest (see above) — there's also no cross-extension service API, so a capability can't be split into its own, separately-optional package either.
-- **Chats are invisible.** A chat (a session with no project) is explicitly documented as outside any project; the `sessions` capability's methods are all scoped to registered projects. There is no SDK method to list or watch chats at all.
-- **Session auto-adoption runs only while the Kanban page is active**, plus the next time it opens. A session started from the sidebar while the board is active is adopted live; one started while the board is closed is found when the board opens again, if it meets the watermark and activity rules. A session started from a task is linked directly to its existing task instead of being adopted as another task.
-- **No way to set a worktree's folder name independently of its branch name** — `startSession`'s `{ kind: 'new', name }` sets both together.
-- **OpenChamber's own worktree-creation can fail with "Remote branch not found" for a branch confirmed to exist on the remote and already fetched locally.** When `host.startSession` rejects for a new-branch request, the real reason doesn't survive the trip back to the extension — only a generic failure does — so the error shown names the base branch involved and suggests this is a known possibility, not a claim that the branch name is wrong.
-
-## Install and verify
-
-```bash
-git clone <this repository>
-cd openchamber-kanban
-npm install
-npm run check   # typecheck + unit tests + build panel/main.js, panel/page.js, service/main.js
+```text
+git add -- <ticket path>
+git commit -m "tickets: <action> <ticket title>" -- <ticket path>
 ```
 
-In OpenChamber: **Settings → Extensions → Add** → paste this folder's absolute path → approve `sessions`, `prompt`, and the local service → open **Kanban** from the Extension pages menu above the session list.
+It never runs `git add -A`, never commits other changes, and reports `409 nothing to commit` when the file is unchanged. The commit message is one line, capped at 200 characters.
 
-Acceptance scenarios:
+## Actions
 
-1. Create three tasks, reload OpenChamber → all three persist.
-2. Drag a task between columns, reload → the new status persists.
-3. Link an existing session to a task → **Open Chat** → the real session opens via `host.openSession`.
-4. Edit a task title and description without clicking **Save changes**, then start an agent → the current values are saved, the description is sent when OpenChamber reports success, the same task links to the session, and the task moves to In Progress.
-5. Run two tasks concurrently → they never share a session id.
-6. An agent finishes a turn → the task moves to Review, never to Done, until marked Done by hand.
-7. Start a session from the OpenChamber sidebar → one new task appears for it, in the column its activity implies.
-8. Start an agent from a task → only the originating task is linked to that session; no second task is adopted for the same session.
+`ticketActions.ts` describes the eight skill launchers: wayfinder, to-tickets, to-spec, triage, implement, implement-spec, code-review and handoff.
+
+Each action returns:
+
+- a label
+- the skill name
+- a prompt containing the skill invocation, ticket number/title, path, and feature
+- a `disabledReason` when it cannot run
+
+Clicking an enabled action fills the prompt box and focuses it. **Start Agent** still sends the prompt; an action never starts a session by itself. Disabled actions stay visible with their reason, so the board explains itself instead of failing after a click.
+
+`implement` is only enabled for the feature's frontier. `implement-spec` and `to-tickets` need a `spec.md`. `code-review` needs a resolved or claimed ticket. Every prompt is edited in a normal textarea before sending.
+
+## Sessions and storage
+
+`host.storage` holds two kinds of records only:
+
+### Ticket index
+
+One record per project + repository-relative ticket path, under:
+
+```text
+ticket-index:<encodeURIComponent(projectId)>:<encodeURIComponent(path)>
+```
+
+```ts
+type TicketLink = {
+  schemaVersion: 1;
+  projectId: string;
+  path: string;
+  sessionId: string | null;
+  worktree: { directory: string; branch: string | null } | null;
+  sourceBranch: string | null;
+  needsAttentionSince: number | null;
+  updatedAt: number;
+};
+```
+
+The key encodes both halves, so two projects cannot collide and a malformed or version-mismatched record is skipped instead of partly trusted. Link records never hold ticket status, title or prose.
+
+On load, `orphanLinkKeys` deletes links whose ticket is absent **only when the scan was complete**. An incomplete service response, unreadable directory or file-budget stop removes nothing.
+
+### Preferences
+
+A single `prefs` record: selected project, feature, search text, and the ticket whose detail is open. This lets the board return to the same view after Open Chat.
+
+## Session lifecycle
+
+Starting an agent calls `host.startSession` with:
+
+- `providerId: kanban-board`
+- a stable synthetic issue id and URL derived from the project + ticket path
+- the ticket title
+- the composed prompt
+- the chosen worktree (`project root`, new branch, or an existing worktree)
+- `navigation: 'preserve'`
+
+The returned worktree and session id are saved into the ticket link with three retries; the ticket detail closes and the new session opens. If session creation succeeds but the prompt was not delivered (`sent: 'no-model' | 'skipped' | 'failed'`), the board says so and leaves the prompt saved in the ticket detail.
+
+The board never changes a ticket's `Status:` in response to session activity. It only sets or clears `needsAttentionSince` on the link. A running session clears attention; a question, permission prompt, finished turn or failure raises it.
+
+Link health is checked two ways:
+
+- **Live** — `sessionSync.ts` and `worktreeSync.ts` watch the projects that currently have links.
+- **On load** — the board reconciles the index against one fresh snapshot.
+
+A deleted session removes the link record. An archived session clears only `sessionId`. A deleted worktree clears only `worktree`. Absence from an unfinished snapshot is `unknown`, and unknown never deletes. An unlinked real session is never turned into a ticket automatically; it appears in the board's unlinked-session list and can be linked from a ticket.
+
+## The local service
+
+`src/service/main.ts` is built to `service/main.js` as Node ESM. Routes:
+
+| Route | Purpose |
+|---|---|
+| `GET /health` | Liveness/version. |
+| `GET /branches` | `git for-each-ref` branch list for the branch picker. |
+| `GET /tickets` | Scan `.scratch` recursively and read `docs/agents/triage-labels.md`. |
+| `GET /ticket` | Read one `.scratch` Markdown file. |
+| `GET /tracker` | Detect local vs GitHub/GitLab remote to explain unsupported remote trackers. |
+| `POST /ticket/write` | Compare expected bytes, then write the previewed bytes. |
+| `POST /ticket/commit` | Stage and commit exactly one ticket path. |
+
+Every request is bearer-authenticated by the host. The page reaches the service through `host.serviceRequest`, so it never handles the token.
+
+Scan limits are explicit: 2,000 Markdown files, 1 MB per file, 6 MB total, 4 MB request body. Reaching a limit marks the snapshot incomplete and adds a warning; it does not silently truncate a trustworthy board.
+
+The service runs only `git` (declared in `permissions.exec`). It never runs a shell, never accepts a command from the page, and never modifies anything outside `.scratch/` except the two read-only tracker documents under `docs/agents/`.
+
+## Remote trackers
+
+The current release reads the local Markdown tracker. A GitHub or GitLab remote is detected by `GET /tracker`, and the board explains that remote issue support needs `gh` or `glab` in the service's exec permission. Adding that permission changes the extension's approval prompt, so it is deliberately left to an explicit opt-in rather than silently widened.
+
+## Graceful degradation
+
+- No service / service not approved → an explanatory empty state with a Refresh button, not a stack trace.
+- No `.scratch/` → setup state, with an agent prompt prefilled with `/setup-matt-pocock-skills`.
+- `.scratch/` with a spec but no issues → a prefilled `/to-tickets <spec>` agent prompt.
+- Empty `.scratch/` → setup state.
+- A malformed ticket → a card with warnings/conflicts; writes are refused while a conflict exists.
+- A stale write → reload and show the current file; never overwrite.
+
+The board never creates `.scratch/`, never edits a repo to “fix” setup, and never auto-commits.
+
+## Verification
+
+```bash
+npm run check
+```
+
+runs `tsc --noEmit`, `node --test --experimental-strip-types test/*.test.ts`, and the esbuild build for panel, page and service.
+
+Unit coverage includes path parsing, field spans, CRLF preservation, diff generation, blocker resolution per feature, frontier selection, custom triage vocabularies, append-only comments/answers, index keying and orphan rules, session attention mapping, link-health rules and worktree picker conversions.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

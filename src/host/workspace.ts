@@ -88,8 +88,8 @@ export const projectForDirectory = (projects: readonly GuestProject[], directory
 export const describeHostError = (error: unknown) => {
   if (error instanceof HostRequestError) {
     switch (error.code) {
-      case 'NOT_GRANTED': return 'This needs the "sessions" permission. Approve it in Settings → Extensions.';
-      case 'DISABLED': return 'The extension is paused in Settings → Extensions.';
+      case 'NOT_GRANTED': return 'This needs the "sessions" permission. Approve it in Settings — Extensions.';
+      case 'DISABLED': return 'The extension is paused in Settings — Extensions.';
       case 'HOST_UNAVAILABLE': return 'Not running inside OpenChamber.';
       case 'HOST_TIMEOUT': return 'OpenChamber did not answer in time. Try again.';
       case 'NOT_FOUND': return 'That session no longer exists.';
@@ -100,10 +100,10 @@ export const describeHostError = (error: unknown) => {
 };
 
 /**
- * Why `startSession`'s `text` (the task's description) might not have
+ * Why `startSession`'s `text` (the ticket's prompt) might not have
  * reached the agent as its first message, even though the session itself
  * was created successfully. `null` means it was sent — nothing to tell the
- * user. The description stays safe on the task either way; it's not lost,
+ * user. The description stays safe on the ticket either way; it's not lost,
  * only not delivered automatically.
  */
 export const describeStartSessionDelivery = (sent: StartSessionSent): string | null => {

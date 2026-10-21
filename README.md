@@ -1,123 +1,142 @@
-# OpenChamber Kanban
+# OpenChamber Ticket Board
 
-This is a Kanban board for OpenChamber. A Kanban board is a board with columns, like Backlog, To Do, and Done. You put tasks on cards. You move cards between columns.
+A local-first ticket board for [OpenChamber](https://openchamber.dev), built around Matt Pocock's ticket workflow. Cards are real tracker tickets: their status, dependencies, body and comments live in `.scratch/` markdown files, not in a second database. The board reads those files, shows the six states the workflow cares about, and can start an OpenCode session for a ticket with the matching skill already in the prompt.
 
-This board does one more thing. It can start a real AI agent chat for a task. It keeps the task and the chat linked.
+The extension id stays `kanban-board` and the panel is still called **Kanban**, so an existing install keeps working.
 
-All your data stays on your own OpenChamber server. This extension does not send your data to any other server.
+## What the board does
 
-## What it does
+- **Reads your tickets, never owns them.** A ticket file is the source of truth. The extension stores only session links and board preferences.
+- **Six columns derived from the files:** Needs triage, Needs info, Ready for agent, Blocked, Needs human, Done. `wontfix` folds into Done.
+- **A real frontier.** In every feature, the lowest-numbered unresolved ticket whose blockers are all resolved and which nobody has claimed is marked **Next**.
+- **Dependencies from `Blocked by:`.** A missing blocker blocks conservatively rather than inventing a ready ticket.
+- **Triage vocabulary from the repository.** `docs/agents/triage-labels.md` can map the five canonical roles to labels your tracker actually uses.
+- **Skill actions.** Wayfinder, to-tickets, to-spec, triage, implement, implement-spec, code-review and handoff each fill the agent prompt with the skill name, ticket path/number and feature. The existing **Start Agent** button sends it.
+- **Linked sessions.** A ticket keeps its session id, worktree and an attention marker. Deleting a session unlinks it; archiving a session or deleting a worktree clears just that link.
+- **Write safety.** A status change or dependency edit opens a unified diff first. The service writes only if the file still has the exact bytes that were previewed, and only under `.scratch/`.
+- **Single-ticket commits.** **Commit this change** runs `git add -- <ticket>` and `git commit -m "tickets: …" -- <ticket>` for that one file. It never runs `git add -A` and never commits unless you ask.
+- **Graceful setup.** With no `.scratch/`, the board offers an agent prompt prefilled with `/setup-matt-pocock-skills`. With a spec but no issues, it offers `/to-tickets <spec>`. It never edits your repository itself.
 
-- Click **Add task**. This creates and saves a new task right away, titled "New task", and opens it for you to edit. Later edits are saved by **Save changes** or when you click **Start Agent**.
-- In the task, change the title. Add a description. The description is sent as the agent's first message.
-- Choose a project.
-- Click **Start Agent**. You do not need to click **Save changes** first. It uses and saves the title, description, and project you have on screen. Pick where it runs: the project's main folder, a new branch, or a worktree you already have.
-- The new chat uses the task title. If the title is still "New task", it uses the first line of the description instead. The description is sent as the first message. If OpenChamber reports that it was not sent, the board tells you; the description remains saved on the task, so you can open the chat and paste it in.
-- The task now links to that chat and moves to **In Progress**. Click the task card later, and it opens the same chat again.
-- You can also link an already-running chat to a task, instead of starting a new one.
-- Start a session from a task on this board, and it stays linked to that task. It does not create another task. Start a session from the OpenChamber sidebar, and the board can add a new task for it automatically, as described below.
-- Delete a session in the OpenChamber sidebar — the linked task is deleted automatically. Archive a session, or delete a worktree — the corresponding link is cleared and the task stays on the board. You can start a new agent for it, or link another session.
-- Move a task to any column two ways: drag the card, or open the task and click one of the "Move to" buttons. There is one button for every column.
+## Requirements
 
+- OpenChamber **1.24.0 or newer** (the Extensions SDK).
+- A project using the local Markdown tracker:
 
-
-
-
-<img width="1577" height="993" alt="Screenshot 2026-10-15 at 4 02 10 PM" src="https://github.com/user-attachments/assets/c738c32b-fd31-4c46-bcd1-1b450f98d45e" />
-<img width="1557" height="870" alt="Screenshot 2026-10-15 at 4 01 49 PM" src="https://github.com/user-attachments/assets/02899ebb-71da-4d9a-9a8a-c609de1a7ef1" />
-
-
-### The Review column moves on its own
-
-Some tasks move to the **Review** column by themselves. You do not drag them there. This happens when:
-
-- the agent finishes its work, or
-- the agent asks you a question, or
-- the agent needs a permission from you, or
-- the agent's run fails.
-
-A task never moves to **Done** by itself. Only you can mark a task Done.
-
-A task that moved to Review, and you have not opened yet, gets an **orange border** on the left side of the card. This border means: "Look at this one." The newest such task is always at the top of the Review column, above tasks you already saw.
-
-Open the task (click it, or click Edit), and the border goes away.
-
-### Tasks can also appear by themselves
-
-If you start a chat in OpenChamber another way — for example, from the sidebar — this board can still find it and make a task for it. The board adopts new, active sessions while it is open, and checks again when you open it. This only works for sessions created **after** you first open the board. It does not look back at older sessions. Sessions started with **Start Agent** are linked to the task you started from, not adopted as another task.
-
-## How it works (a simple picture)
-
+```text
+.scratch/
+  <feature>/
+    spec.md
+    map.md                         # optional wayfinder map
+    issues/
+      01-first-ticket.md
+      02-second-ticket.md
 ```
-   Kanban Board
-        |
-        |  click a task with no chat yet, or click Start Agent
-        v
-   Task Detail
-        |
-        |  Start Agent / Open Chat
-        v
-   OpenCode Chat  <-----> the real agent does the work here
-        |
-        |  the task stays linked to this chat
-        v
-   Kanban Board  (the task shows the new status, for example Review)
+
+- The Matt Pocock skills installed in OpenCode (wayfinder, to-tickets, triage, implement, handoff, and so on). The board only launches them; it does not bundle them.
+- Optional: `docs/agents/triage-labels.md` and an issue-tracker config from `/setup-matt-pocock-skills`.
+
+## Ticket format
+
+```markdown
+# 02: Add the parser
+
+Status: ready-for-agent
+Type: task
+Blocked by: 01
+Labels: enhancement
+
+The body of the ticket.
+
+## Comments
+
+### Board — 2026-10-21T10:00:00.000Z
+
+A comment appended without touching the body.
+
+## Answer
+
+What resolving this ticket decided.
 ```
+
+`Status:` and `Blocked by:` are read anywhere before `## Comments` or `## Answer`. `**Status:**` and CRLF files work. Writes replace only the value span of the field line; the rest of the file is preserved byte-for-byte.
+
+Recognised statuses:
+
+| Status | Column |
+|---|---|
+| empty, unknown, `needs-triage` | Needs triage |
+| `needs-info` | Needs info |
+| `ready-for-agent` | Ready for agent |
+| `claimed`, `in-progress` | Ready for agent, but not the frontier |
+| `ready-for-human` | Needs human |
+| `resolved`, `done`, `closed`, `cancelled`, `wontfix` | Done |
+| anything with an unresolved or missing blocker | Blocked |
+
+`Type:` is one of `research`, `prototype`, `grilling`, `task`.
 
 ## Install
 
-**1. Get the code.**
-
 ```bash
-git clone https://github.com/<your-username>/openchamber-kanban.git
-cd openchamber-kanban
-```
-
-**2. Build it.**
-
-```bash
+git clone https://github.com/Maicarons/openchamber-ticket-board.git
+cd openchamber-ticket-board
 npm install
 npm run check
 ```
 
-`npm run check` does three things: it checks the TypeScript types, it runs all tests, and it builds the files OpenChamber needs. If this command finishes with no errors, the build is good.
+`npm run check` typechecks, runs the unit tests, and builds the panel, page and service bundles.
 
-**3. Add it to OpenChamber.**
+Then in OpenChamber:
 
-- Open OpenChamber.
-- Go to **Settings → Extensions**.
-- Click **Add**.
-- Paste the full folder path, for example `~/path/to/openchamber-kanban`.
-- OpenChamber shows you three permissions to approve:
-  - **Access projects and sessions** — lets the board see your projects and chats, and open or create chats.
-  - **Send messages in your sessions** — lets **Start Agent** send your task's description as the first chat message.
-  - **Run a local service** — see "What the local service does" below. This is the only reason this permission exists.
-- Click **Allow and enable**.
-- Open **Kanban** from the Extension pages menu, above your session list.
+1. **Settings → Extensions → Add**.
+2. Paste the absolute path to this folder.
+3. Approve the requested capabilities: projects/sessions, sending the first prompt, and the local service.
+4. Open **Kanban** from the Extension pages menu above the session list.
 
-**Requirement:** OpenChamber version 1.24.0 or newer. Older versions do not have the Extensions feature at all.
+The rail panel shows a compact summary. The full board is the page.
 
-## What the local service does — and nothing else
+## Using it
 
-The approval screen calls this "Run a local service" and says it runs with your full user access. That sounds broad, so here is exactly what it does:
+- **Open a card** to read the whole ticket, its comments and answer.
+- **Status / Blocked by** can be edited in the detail view; dragging a card to another column changes `Status:` (dropping into **Blocked** is refused because Blocked is derived).
+- **Action buttons** replace the prompt with the matching skill invocation and focus the description box. Edit it if you like, then press **Start Agent**.
+- **Claim** sets `Status: claimed` through the same diff confirmation.
+- **Commit this change** is offered after a successful write, but never pressed for you.
+- **Refresh** rereads the files. If a ticket changed on disk, the write is rejected with a conflict instead of overwriting it.
 
-- It runs **one command only**: `git for-each-ref`, which **reads** your repository's branch names. It does not read file contents, does not read commit messages, does not write anything, and does not touch your git history.
-- It only runs for a project directory already in your OpenChamber project list — never any other folder.
-- It only answers OpenChamber itself, on your own computer. It never connects to the internet on its own.
-- Its only purpose is filling in the "Based on" dropdown in **Start Agent** with your repository's real branch names, so you can search for one instead of typing it by hand.
+The board shows one project at a time because blocker numbers are scoped to a feature inside a repository. A feature selector and free-text search narrow the board; search never changes which card is **Next**.
 
-If you don't approve it, or it isn't running, "Based on" still works — it just offers fewer branches (only ones that already have a worktree) plus "Use project default".
+## What is stored where
 
-## What this extension cannot do
+Ticket files hold everything substantive: status, type, dependencies, prose, comments and answers.
 
-Some things are not possible with the current OpenChamber SDK (SDK = the toolkit extensions are built with). This is not a bug. It is a real limit.
+`host.storage` holds only:
 
-- **It cannot see "Chats."** In OpenChamber, a Chat is a conversation with no project attached. This board only knows about chats inside a project. A Chat with no project never shows up here.
-- **It cannot watch for new chats while you are in a different chat.** Starting a chat always switches your screen away from this board. The board can only check for new chats the next time you open it.
-- **It cannot set a separate folder name for a new worktree.** The branch name and the folder name are always the same.
+- one **ticket link** record per project + ticket path: session id, worktree, source branch and `needsAttentionSince`;
+- **prefs**: selected project, feature, search text, and the ticket that was open.
 
+Links are keyed by project and path, so two projects cannot collide. If a ticket file disappears, its link is removed only when the scan of that project was complete; an incomplete snapshot never deletes links. Malformed records are skipped and reported, never partly trusted.
 
+## Remote trackers
 
-## Project files
+This release is the local Markdown tracker. It detects a GitHub or GitLab remote and explains that remote issue support needs the matching CLI permission (`gh` or `glab`) rather than pretending the repository has no tracker. Adding that permission changes the service's approval prompt, so it is a deliberate opt-in rather than a silent expansion.
 
-See `ARCHITECTURE.md` for the full technical write-up: how each file works and the exact SDK limits behind each design choice.
+## Privacy
+
+Everything runs on the machine running OpenChamber. The extension sends nothing to a third-party service. The local service listens on loopback, requires the host's bearer token, reads only project `.scratch/` markdown plus `docs/agents/triage-labels.md`, and writes only `.scratch/` markdown after the previewed bytes match.
+
+## Development
+
+```bash
+npm run typecheck
+npm test
+npm run build
+npm run check     # all three
+```
+
+The domain layer is pure and has no SDK or DOM imports. Host and store layers use narrow `Pick<HostClient, …>` slices with fakes in tests. The UI is the only layer that touches the DOM.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the file-by-file design, the write protocol and the exact SDK limits.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
