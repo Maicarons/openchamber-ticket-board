@@ -9,6 +9,7 @@ import {
   formatBlockedByRefs,
   isWritableTicketPath,
   previewTicketEdit,
+  previewTicketEdits,
   setTicketBlockedBy,
   setTicketStatus,
   TicketEditError,
@@ -137,6 +138,20 @@ test('preview returns a reviewable diff and marks a no-op', () => {
   const noop = previewTicketEdit(ticket, { kind: 'status', status: 'claimed' });
   assert.equal(noop.changed, false);
   assert.equal(noop.diff, '');
+});
+
+test('an answer and its resolving Status change are one diff and one save', () => {
+  const ticket = parseTicketContent('.scratch/d/issues/02-x.md', fixture('02-real-claimed.md'));
+  const preview = previewTicketEdits(ticket, [
+    { kind: 'answer', body: 'The parser won.', at: '2026-10-21T00:00:00.000Z' },
+    { kind: 'status', status: 'resolved' },
+  ]);
+  assert.equal(preview.changed, true);
+  assert.match(preview.after, /## Answer[\s\S]*The parser won\./);
+  assert.match(preview.after, /Status: resolved/);
+  assert.match(preview.summary, /Append an answer/);
+  assert.match(preview.summary, /Status: claimed .* resolved/);
+  assert.equal(removedLines(preview.diff).includes('Status: claimed'), true);
 });
 
 test('only a ticket file under .scratch can be written', () => {

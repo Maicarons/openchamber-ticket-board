@@ -308,7 +308,7 @@ export const isTriageRole = (status: string | null | undefined): status is Triag
  * could not understand. Only a non-string content or empty path is a caller
  * error.
  */
-export const parseTicketContent = (rawPath: string, content: string): Ticket => {
+export const parseTicketContent = (rawPath: string, content: string, vocabulary: Readonly<Record<string, string>> = {}): Ticket => {
   if (typeof content !== 'string') throw new Error('ticket content must be text');
   const info = parseTicketPath(rawPath);
   const lines = lineTexts(content);
@@ -376,7 +376,13 @@ export const parseTicketContent = (rawPath: string, content: string): Ticket => 
   const comments = sectionBodies(lines, 'Comments').join('\n\n');
   const answer = sectionBodies(lines, 'Answer').join('\n\n');
 
-  if (status && !isTriageRole(status) && !isResolvedStatus(status) && !isClaimedStatus(status) && status !== 'claimed') {
+  if (
+    status &&
+    !isTriageRole(status) &&
+    !isResolvedStatus(status) &&
+    !isClaimedStatus(status) &&
+    !Object.values(vocabulary).some((label) => label.trim().toLowerCase() === status)
+  ) {
     warnings.push(`Unrecognised Status "${rawStatus}"`);
   }
 
@@ -404,7 +410,8 @@ export const parseTicketContent = (rawPath: string, content: string): Ticket => 
   };
 };
 
-export const parseTicket = (rawPath: string, content: string): Ticket => parseTicketContent(rawPath, content);
+export const parseTicket = (rawPath: string, content: string, vocabulary: Readonly<Record<string, string>> = {}): Ticket =>
+  parseTicketContent(rawPath, content, vocabulary);
 
 /** A name first, always; the id is a fallback for a file with no heading. */
 export const ticketName = (ticket: Pick<Ticket, 'title'>): string => ticket.title;

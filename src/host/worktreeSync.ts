@@ -1,29 +1,33 @@
 import type { GuestWorktreesSnapshot, HostClient } from '@openchamber/sdk';
 import { worktreeLinkState } from '../domain/unlink.ts';
-import type { Task } from '../domain/task.ts';
+import type { TicketWorktree } from '../domain/ticketIndex.ts';
 
 export type WorktreeSyncHost = Pick<HostClient, 'onWorktrees'>;
 
+export type WatchedWorktreeTicket = {
+  id: string;
+  projectId: string;
+  worktree: TicketWorktree | null;
+};
+
 /**
- * Watches the live worktree state behind every task that has one linked, and
- * reports the task when its worktree is deleted from the sidebar — the link
- * must not outlive what it points at. Same shape as `sessionSync`: one
- * subscription per distinct project among those tasks, released once no
- * watched task still needs it.
+ * Watches the live worktree behind every linked ticket and clears the link
+ * when that worktree is deleted from the sidebar. One subscription per
+ * project, same shape as `createSessionSync`.
  */
 export const createWorktreeSync = (
   host: WorktreeSyncHost,
-  onWorktreeGone: (taskId: string) => void,
+  onWorktreeGone: (ticketId: string) => void,
 ) => {
   const subscriptions = new Map<string, Promise<() => void>>();
-  let tasksById = new Map<string, Task>();
+  let ticketsById = new Map<string, WatchedWorktreeTicket>();
   let disposed = false;
 
   const applySnapshot = (projectId: string, snapshot: GuestWorktreesSnapshot) => {
     if (disposed) return;
-    for (const task of tasksById.values()) {
-      if (task.projectId !== projectId || !task.worktree) continue;
-      if (worktreeLinkState(task.worktree.directory, snapshot) === 'gone') onWorktreeGone(task.id);
+    for (const ticket of ticketsById.values()) {
+      if (ticket.projectId !== projectId || !ticket.worktree) continue;
+      if (worktreeLinkState(ticket.worktree.directory, snapshot) === 'gone') onWorktreeGone(ticket.id);
     }
   };
 
@@ -35,11 +39,10 @@ export const createWorktreeSync = (
     }, () => undefined);
   };
 
-  /** Call whenever the task list changes (reload, link, create, delete, move). */
-  const sync = (tasks: readonly Task[]) => {
+  const sync = (tickets: readonly WatchedWorktreeTicket[]) => {
     if (disposed) return;
-    tasksById = new Map(tasks.map((task) => [task.id, task]));
-    const needed = new Set(tasks.filter((task) => task.worktree && task.projectId).map((task) => task.projectId as string));
+    ticketsById = new Map(tickets.map((ticket) => [ticket.id, ticket]));
+    const needed = new Set(tickets.filter((ticket) => ticket.worktree && ticket.projectId).map((ticket) => ticket.projectId));
     for (const projectId of needed) if (!subscriptions.has(projectId)) watch(projectId);
     for (const [projectId, promise] of subscriptions) {
       if (needed.has(projectId)) continue;

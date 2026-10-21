@@ -306,3 +306,28 @@ export const previewTicketEdit = (ticket: Ticket, edit: TicketEdit): TicketEditP
     summary: describe(ticket, edit),
   };
 };
+
+/**
+ * Preview several writes as one confirmation. They apply in order to the same
+ * in-memory snapshot, so a Status change and a Blocked by change produce one
+ * diff and one save instead of racing two dialogs at the same file.
+ */
+export const previewTicketEdits = (ticket: Ticket, edits: readonly TicketEdit[]): TicketEditPreview => {
+  let after = ticket.content;
+  let current = ticket;
+  const summaries: string[] = [];
+  for (const edit of edits) {
+    const next = applyTicketEdit(current, edit);
+    summaries.push(describe(current, edit));
+    after = next;
+    current = { ...current, content: next };
+  }
+  return {
+    path: ticket.path,
+    before: ticket.content,
+    after,
+    diff: buildUnifiedDiff(ticket.path, ticket.content, after),
+    changed: after !== ticket.content,
+    summary: summaries.join('; '),
+  };
+};

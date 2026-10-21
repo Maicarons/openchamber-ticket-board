@@ -73,6 +73,21 @@ test('resolving a blocker moves the dependent ticket from Blocked to Ready', () 
   assert.equal(frontierTicket([resolvedA, b])?.numberValue, 2);
 });
 
+test('a custom wontfix label is finished, including when it is another ticket\'s blocker', () => {
+  const labels = {
+    'needs-triage': 'needs-triage',
+    'needs-info': 'needs-info',
+    'ready-for-agent': 'ready-for-agent',
+    'ready-for-human': 'ready-for-human',
+    wontfix: 'never',
+  };
+  const closed = make('never', { number: 1 });
+  const dependent = make('ready-for-agent', { number: 2, blockedBy: [1] });
+  assert.equal(ticketColumn(closed, [closed, dependent], labels), 'done');
+  assert.equal(ticketColumn(dependent, [closed, dependent], labels), 'ready');
+  assert.equal(frontierTicket([closed, dependent], labels)?.numberValue, 2);
+});
+
 test('a missing blocker never becomes a frontier', () => {
   const b = make('ready-for-agent', { number: 2, blockedBy: [99] });
   assert.equal(ticketColumn(b, [b]), 'blocked');

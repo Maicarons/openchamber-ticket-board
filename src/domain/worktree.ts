@@ -1,5 +1,5 @@
 import type { GuestSessionWorktree, GuestWorktree, StartSessionResult } from '@openchamber/sdk';
-import type { TaskWorktree } from './task.ts';
+import type { TicketWorktree } from './ticketIndex.ts';
 
 export const DESTINATION_ROOT = 'root';
 export const DESTINATION_NEW = 'new';
@@ -53,12 +53,12 @@ export const buildBaseBranchOptions = (worktrees: readonly GuestWorktree[]) => {
 export const hasKnownBranches = (worktrees: readonly GuestWorktree[]): boolean => worktrees.some((w) => Boolean(w.branch));
 
 /**
- * What to persist on the task once `startSession` returns successfully.
+ * What to persist on the ticket's session link once `startSession` returns successfully.
  * Prefers the host's own report of where the session ended up; falls back
  * to the directory we asked for when the host didn't echo one back (e.g. an
  * existing worktree we already knew the branch for isn't re-stated).
  */
-export const resolveTaskWorktree = (requested: GuestSessionWorktree, result: StartSessionResult): TaskWorktree | null => {
+export const resolveTicketWorktree = (requested: GuestSessionWorktree, result: StartSessionResult): TicketWorktree | null => {
   if (result.sessionId === null) return null;
   if (result.worktree) return { directory: result.worktree.directory, branch: result.worktree.branch };
   if (typeof requested === 'object' && requested.kind === 'existing') return { directory: requested.directory, branch: null };

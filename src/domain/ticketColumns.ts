@@ -4,6 +4,7 @@ import {
   type BlockedByRef,
   type Ticket,
 } from './ticket.ts';
+import { DEFAULT_TRIAGE_LABELS, triageRoleForStatus, type TriageLabels } from './triageLabels.ts';
 
 /**
  * The board's six columns, in the order a person reads a queue. These are
@@ -53,7 +54,11 @@ const byNumberThenPath = (a: Ticket, b: Ticket): number => {
  * When the ticket belongs to a feature, only that feature's tickets count, so
  * two features' `02` files can never be confused.
  */
-export const resolveBlockers = (ticket: Ticket, siblings: readonly Ticket[]): BlockedState => {
+export const resolveBlockers = (
+  ticket: Ticket,
+  siblings: readonly Ticket[],
+  labels: TriageLabels = DEFAULT_TRIAGE_LABELS,
+): BlockedState => {
   const candidates = siblings.filter((candidate) => candidate.feature === ticket.feature);
   const byNumber = new Map<number, Ticket>();
   for (const candidate of candidates) {
@@ -62,7 +67,9 @@ export const resolveBlockers = (ticket: Ticket, siblings: readonly Ticket[]): Bl
   }
   const blockers = ticket.blockedBy.map((ref): BlockerResolution => {
     const blocker = byNumber.get(ref.value) ?? null;
-    return { ref, ticket: blocker, resolved: blocker !== null && isResolvedStatus(blocker.status) };
+    const resolved = blocker !== null &&
+      (isResolvedStatus(blocker.status) || triageRoleForStatus(blocker.status, labels) === 'wontfix');
+    return { ref, ticket: blocker, resolved };
   });
   const open = blockers.filter((blocker) => blocker.ticket !== null && !blocker.resolved);
   const missing = blockers.filter((blocker) => blocker.ticket === null);
@@ -75,10 +82,11 @@ export const resolveBlockers = (ticket: Ticket, siblings: readonly Ticket[]): Bl
   };
 };
 
-const statusColumn = (status: string | null): TicketColumn => {
-  if (status === 'needs-info') return 'needs-info';
-  if (status === 'ready-for-human') return 'human';
-  if (status === 'ready-for-agent' || isClaimedStatus(status)) return 'ready';
+const statusColumn = (status: string | null, labels: TriageLabels): TicketColumn => {
+  const role = triageRoleForStatus(status, labels);
+  if (role === 'needs-info') return 'needs-info';
+  if (role === 'ready-for-human') return 'human';
+  if (role === 'ready-for-agent' || isClaimedStatus(status)) return 'ready';
   // An untriaged ticket, an empty Status line and an unfamiliar status all
   // belong where a person can evaluate them, not in a made-up column.
   return 'triage';
@@ -90,25 +98,39 @@ const statusColumn = (status: string | null): TicketColumn => {
  * 2. any unfinished ticket whose Blocked by is not all resolved is Blocked;
  * 3. otherwise its Status picks the lane.
  */
-export const ticketColumn = (ticket: Ticket, siblings: readonly Ticket[] = [ticket]): TicketColumn => {
-  if (isResolvedStatus(ticket.status)) return 'done';
-  if (resolveBlockers(ticket, siblings).blocked) return 'blocked';
-  return statusColumn(ticket.status);
+export const ticketColumn = (
+  ticket: Ticket,
+  siblings: readonly Ticket[] = [ticket],
+  labels: TriageLabels = DEFAULT_TRIAGE_LABELS,
+): TicketColumn => {
+  if (isResolvedStatus(ticket.status) || triageRoleForStatus(ticket.status, labels) === 'wontfix') return 'done';
+  if (resolveBlockers(ticket, siblings, labels).blocked) return 'blocked';
+  return statusColumn(ticket.status, labels);
 };
 
-export const isFrontierCandidate = (ticket: Ticket, siblings: readonly Ticket[] = [ticket]): boolean => {
+export const isFrontierCandidate = (
+  ticket: Ticket,
+  siblings: readonly Ticket[] = [ticket],
+  labels: TriageLabels = DEFAULT_TRIAGE_LABELS,
+): boolean => {
   if (isResolvedStatus(ticket.status)) return false;
   if (isClaimedStatus(ticket.status)) return false;
-  if (ticketColumn(ticket, siblings) !== 'ready') return false;
-  return !resolveBlockers(ticket, siblings).blocked;
+  if (ticketColumn(ticket, siblings, labels) !== 'ready') return false;
+  return !resolveBlockers(ticket, siblings, labels).blocked;
 };
 
 /** Frontier order is the tracker's own: lowest ticket number first. */
-export const frontierTickets = (tickets: readonly Ticket[]): Ticket[] =>
-  tickets.filter((ticket) => isFrontierCandidate(ticket, tickets)).sort(byNumberThenPath);
+export const frontierTickets = (
+  tickets: readonly Ticket[],
+  labels: TriageLabels = DEFAULT_TRIAGE_LABELS,
+): Ticket[] =>
+  tickets.filter((ticket) => isFrontierCandidate(ticket, tickets, labels)).sort(byNumberThenPath);
 
 /** The one card marked "Next". */
-export const frontierTicket = (tickets: readonly Ticket[]): Ticket | null => frontierTickets(tickets)[0] ?? null;
+export const frontierTicket = (
+  tickets: readonly Ticket[],
+  labels: TriageLabels = DEFAULT_TRIAGE_LABELS,
+): Ticket | null => frontierTickets(tickets, labels)[0] ?? null;
 
 export type TicketColumns = Record<TicketColumn, Ticket[]>;
 
@@ -117,10 +139,13 @@ export type TicketColumns = Record<TicketColumn, Ticket[]>;
  * the next action is always the first thing in its lane; every other column
  * stays in ticket-number order.
  */
-export const groupTicketColumns = (tickets: readonly Ticket[]): TicketColumns => {
+export const groupTicketColumns = (
+  tickets: readonly Ticket[],
+  labels: TriageLabels = DEFAULT_TRIAGE_LABELS,
+): TicketColumns => {
   const columns = Object.fromEntries(TICKET_COLUMNS.map((column) => [column, [] as Ticket[]])) as TicketColumns;
-  const frontier = frontierTicket(tickets);
-  for (const ticket of tickets) columns[ticketColumn(ticket, tickets)].push(ticket);
+  const frontier = frontierTicket(tickets, labels);
+  for (const ticket of tickets) columns[ticketColumn(ticket, tickets, labels)].push(ticket);
   for (const column of TICKET_COLUMNS) {
     const list = columns[column];
     list.sort(byNumberThenPath);
@@ -135,8 +160,12 @@ export const groupTicketColumns = (tickets: readonly Ticket[]): TicketColumns =>
 };
 
 /** Human-readable blocker reasons for a card's title/tooltip. */
-export const blockingReasons = (ticket: Ticket, siblings: readonly Ticket[]): string[] => {
-  const state = resolveBlockers(ticket, siblings);
+export const blockingReasons = (
+  ticket: Ticket,
+  siblings: readonly Ticket[],
+  labels: TriageLabels = DEFAULT_TRIAGE_LABELS,
+): string[] => {
+  const state = resolveBlockers(ticket, siblings, labels);
   return state.blockers
     .filter((blocker) => !blocker.resolved)
     .map((blocker) =>
@@ -146,8 +175,11 @@ export const blockingReasons = (ticket: Ticket, siblings: readonly Ticket[]): st
     );
 };
 
-export const isBlocked = (ticket: Ticket, siblings: readonly Ticket[]): boolean =>
-  resolveBlockers(ticket, siblings).blocked;
+export const isBlocked = (
+  ticket: Ticket,
+  siblings: readonly Ticket[],
+  labels: TriageLabels = DEFAULT_TRIAGE_LABELS,
+): boolean => resolveBlockers(ticket, siblings, labels).blocked;
 
 /** Ticket number as a stable, zero-padded label for cards. */
 export const numberOf = (ticket: Pick<Ticket, 'numberValue' | 'number'>): string => {

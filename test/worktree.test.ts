@@ -11,7 +11,7 @@ import {
   parseBranchServiceResponse,
   parseGitRefOutput,
   resolveBaseBranch,
-  resolveTaskWorktree,
+  resolveTicketWorktree,
 } from '../src/domain/worktree.ts';
 
 test('buildSessionWorktree maps the picker selection to the startSession shape', () => {
@@ -47,22 +47,22 @@ test('branchNameConflictsWithBase catches a new branch based on itself', () => {
   assert.equal(branchNameConflictsWithBase('fix/x', undefined), false, '"use project default" is never a known conflict');
 });
 
-test('resolveTaskWorktree prefers the host-reported worktree', () => {
+test('resolveTicketWorktree prefers the host-reported worktree', () => {
   const success: StartSessionResult = { sessionId: 'ses_1', sent: 'sent', worktree: { directory: '/repo/.worktrees/x', name: 'x', branch: 'fix/x', status: 'ready' } };
-  assert.deepEqual(resolveTaskWorktree(false, success), { directory: '/repo/.worktrees/x', branch: 'fix/x' });
+  assert.deepEqual(resolveTicketWorktree(false, success), { directory: '/repo/.worktrees/x', branch: 'fix/x' });
 });
 
-test('resolveTaskWorktree falls back to the requested existing directory when the host omits it', () => {
+test('resolveTicketWorktree falls back to the requested existing directory when the host omits it', () => {
   const success: StartSessionResult = { sessionId: 'ses_1', sent: 'sent' };
   const requested = { kind: 'existing' as const, directory: '/repo/.worktrees/x' };
-  assert.deepEqual(resolveTaskWorktree(requested, success), { directory: '/repo/.worktrees/x', branch: null });
+  assert.deepEqual(resolveTicketWorktree(requested, success), { directory: '/repo/.worktrees/x', branch: null });
 });
 
-test('resolveTaskWorktree is null for project root and for a failed creation', () => {
+test('resolveTicketWorktree is null for project root and for a failed creation', () => {
   const success: StartSessionResult = { sessionId: 'ses_1', sent: 'sent' };
-  assert.equal(resolveTaskWorktree(false, success), null);
+  assert.equal(resolveTicketWorktree(false, success), null);
   const failure: StartSessionResult = { sessionId: null, sent: 'skipped', directory: '/repo/.worktrees/x', worktree: { directory: '/repo/.worktrees/x', name: 'x', branch: 'x', status: 'pending' }, failure: 'bootstrap-failed' };
-  assert.equal(resolveTaskWorktree(false, failure), null);
+  assert.equal(resolveTicketWorktree(false, failure), null);
 });
 
 test('parseGitRefOutput reads local and remote branches, skipping each remote\'s own HEAD pointer', () => {

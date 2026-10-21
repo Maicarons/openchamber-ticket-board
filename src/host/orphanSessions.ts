@@ -1,28 +1,25 @@
 import type { GuestSessionsSnapshot, HostClient } from '@openchamber/sdk';
-import { initialStatusForNewSession, isAdoptable } from '../domain/autoTask.ts';
-import { DEFAULT_SYNC_OPTIONS, type SyncOptions } from '../domain/sync.ts';
-import type { TaskStatus } from '../domain/task.ts';
+import { isUnlinkedSession, attentionForSession, DEFAULT_ATTENTION_OPTIONS, type AttentionOptions } from '../domain/sessionSignal.ts';
 
 export type OrphanSessionsHost = Pick<HostClient, 'onProjects' | 'onSessions'>;
 
-export type OrphanFound = { projectId: string; session: { id: string; title: string; createdAt: number }; status: TaskStatus };
+export type UnlinkedSession = {
+  projectId: string;
+  session: { id: string; title: string; createdAt: number };
+  needsAttention: boolean;
+};
 
 /**
- * Watches every registered project for a session with no task pointed at
- * it yet, and reports it — with the status its current activity implies —
- * on every snapshot, not just once. "Going forward only" (not for sessions
- * that pre-date this feature) is enforced by the caller comparing
- * `session.createdAt` against a persisted watermark (`store/orphanWatermark.ts`),
- * not by this watcher: a page-type extension can't stay running across the
- * navigation that starting a session itself causes, so there is no
- * reliable in-memory "first snapshot" to treat as a baseline here — only a
- * persisted cutoff survives the page closing and reopening.
+ * Watches every registered project for a real session that no ticket points
+ * at. The board never turns such a session into a ticket on its own — the
+ * ticket file is the source of truth — but it can offer it when the person
+ * opens a ticket to link one.
  */
-export const watchOrphanSessions = (
+export const watchUnlinkedSessions = (
   host: OrphanSessionsHost,
   getLinkedSessionIds: () => ReadonlySet<string>,
-  onFound: (found: OrphanFound) => void,
-  options: SyncOptions = DEFAULT_SYNC_OPTIONS,
+  onFound: (found: UnlinkedSession) => void,
+  options: AttentionOptions = DEFAULT_ATTENTION_OPTIONS,
 ) => {
   let disposed = false;
   const projectSubs = new Map<string, Promise<() => void>>();
@@ -31,9 +28,12 @@ export const watchOrphanSessions = (
     if (disposed) return;
     const linked = getLinkedSessionIds();
     for (const session of snapshot.sessions) {
-      if (!isAdoptable(session, linked)) continue;
-      const status = initialStatusForNewSession(session, options);
-      if (status) onFound({ projectId, session: { id: session.id, title: session.title, createdAt: session.createdAt }, status });
+      if (!isUnlinkedSession(session, linked)) continue;
+      onFound({
+        projectId,
+        session: { id: session.id, title: session.title, createdAt: session.createdAt },
+        needsAttention: attentionForSession(session.activity, session.outcome, options) === true,
+      });
     }
   };
 

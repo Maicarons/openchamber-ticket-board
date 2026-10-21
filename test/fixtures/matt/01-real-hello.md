@@ -13,7 +13,7 @@ First comment body.
 
 ---
 
-### FeatherHunter — 2026-08-24T01:00:00.000Z
+### reviewer — 2026-08-24T01:00:00.000Z
 Second comment.
 
 ## Answer
