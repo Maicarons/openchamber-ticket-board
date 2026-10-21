@@ -1,5 +1,6 @@
 import type { HostClient } from '@openchamber/sdk';
 import { DEFAULT_TRIAGE_LABELS, parseTriageLabels, type TriageLabels } from '../domain/triageLabels.ts';
+import { translate, type Language } from '../i18n.ts';
 
 export type TicketServiceHost = Pick<HostClient, 'serviceRequest'>;
 
@@ -63,17 +64,23 @@ const errorText = (error: unknown): string => {
  * not approved, not running, or not supported degrades to an explanatory
  * empty state — never a thrown error the board has to recover from.
  */
-export const fetchTicketBundle = async (host: TicketServiceHost, directory: string): Promise<TicketBundle> => {
+export const fetchTicketBundle = async (
+  host: TicketServiceHost,
+  directory: string,
+  language: Language = 'en',
+): Promise<TicketBundle> => {
   try {
     const result = await host.serviceRequest({ method: 'GET', path: '/tickets', query: { directory } });
-    if (result.status !== 200) return { state: 'unavailable', message: `Ticket service answered ${result.status}.` };
+    if (result.status !== 200) {
+      return { state: 'unavailable', message: translate(language, 'service.answered', { status: result.status }) };
+    }
     const record = parseBody(result.body);
-    if (!record) return { state: 'unavailable', message: 'Ticket service returned an unreadable answer.' };
+    if (!record) return { state: 'unavailable', message: translate(language, 'service.unreadable') };
     if (record.configured !== true) {
-      return { state: 'unconfigured', message: 'This project has no .scratch directory yet.' };
+      return { state: 'unconfigured', message: translate(language, 'service.noScratch') };
     }
     const files = filesOf(record.files);
-    if (!files) return { state: 'unavailable', message: 'Ticket service returned malformed file data.' };
+    if (!files) return { state: 'unavailable', message: translate(language, 'service.malformed') };
     const rawLabels = typeof record.triageLabels === 'string' ? record.triageLabels : null;
     return {
       state: 'ready',
@@ -84,18 +91,27 @@ export const fetchTicketBundle = async (host: TicketServiceHost, directory: stri
       warnings: stringArray(record.warnings),
     };
   } catch (error) {
-    return { state: 'unavailable', message: `The local ticket service is not available — ${errorText(error)}` };
+    return {
+      state: 'unavailable',
+      message: translate(language, 'service.unavailable', { error: errorText(error) }),
+    };
   }
 };
 
-export const fetchTrackerInfo = async (host: TicketServiceHost, directory: string): Promise<TrackerInfo> => {
+export const fetchTrackerInfo = async (
+  host: TicketServiceHost,
+  directory: string,
+  language: Language = 'en',
+): Promise<TrackerInfo> => {
   try {
     const result = await host.serviceRequest({ method: 'GET', path: '/tracker', query: { directory } });
     if (result.status !== 200) {
-      return { kind: 'none', configured: false, reason: 'Tracker could not be detected.', remoteHost: null };
+      return { kind: 'none', configured: false, reason: translate(language, 'tracker.couldNotDetect'), remoteHost: null };
     }
     const record = parseBody(result.body);
-    if (!record) return { kind: 'none', configured: false, reason: 'Tracker answered with unreadable data.', remoteHost: null };
+    if (!record) {
+      return { kind: 'none', configured: false, reason: translate(language, 'tracker.unreadable'), remoteHost: null };
+    }
     const kind = record.kind === 'local' || record.kind === 'github' || record.kind === 'gitlab' ? record.kind : 'none';
     const remote = record.remote && typeof record.remote === 'object' && !Array.isArray(record.remote)
       ? (record.remote as Record<string, unknown>)
@@ -107,7 +123,12 @@ export const fetchTrackerInfo = async (host: TicketServiceHost, directory: strin
       remoteHost: typeof remote?.host === 'string' ? remote.host : null,
     };
   } catch (error) {
-    return { kind: 'none', configured: false, reason: errorText(error), remoteHost: null };
+    return {
+      kind: 'none',
+      configured: false,
+      reason: translate(language, 'service.unavailable', { error: errorText(error) }),
+      remoteHost: null,
+    };
   }
 };
 
@@ -124,6 +145,7 @@ export const writeTicketFile = async (
   path: string,
   content: string,
   expected: string,
+  language: Language = 'en',
 ): Promise<WriteResult> => {
   try {
     const result = await host.serviceRequest({
@@ -133,13 +155,27 @@ export const writeTicketFile = async (
     });
     if (result.status === 200) return { ok: true };
     const body = parseBody(result.body);
+    const localized =
+      result.status === 409
+        ? translate(language, 'write.conflict')
+        : result.status === 404
+          ? translate(language, 'write.notFound')
+          : result.status === 413
+            ? translate(language, 'write.tooLarge')
+            : result.status === 400
+              ? translate(language, 'write.badRequest')
+              : translate(language, 'write.failed', { status: result.status });
     return {
       ok: false,
       conflict: result.status === 409,
-      message: typeof body?.error === 'string' ? body.error : `Write failed (${result.status}).`,
+      message: typeof body?.error === 'string' && result.status !== 400 ? body.error : localized,
     };
   } catch (error) {
-    return { ok: false, conflict: false, message: errorText(error) };
+    return {
+      ok: false,
+      conflict: false,
+      message: translate(language, 'service.unavailable', { error: errorText(error) }),
+    };
   }
 };
 
@@ -150,6 +186,7 @@ export const commitTicketFile = async (
   directory: string,
   path: string,
   message: string,
+  language: Language = 'en',
 ): Promise<CommitResult> => {
   try {
     const result = await host.serviceRequest({
@@ -159,11 +196,20 @@ export const commitTicketFile = async (
     });
     const body = parseBody(result.body);
     if (result.status === 200 && typeof body?.commit === 'string') return { ok: true, commit: body.commit };
+    const localized =
+      result.status === 409
+        ? translate(language, 'commit.nothing')
+        : result.status === 400
+          ? translate(language, 'commit.badRequest')
+          : translate(language, 'commit.failed', { status: result.status });
     return {
       ok: false,
-      message: typeof body?.error === 'string' ? body.error : `Commit failed (${result.status}).`,
+      message: typeof body?.error === 'string' && result.status !== 400 ? body.error : localized,
     };
   } catch (error) {
-    return { ok: false, message: errorText(error) };
+    return {
+      ok: false,
+      message: translate(language, 'service.unavailable', { error: errorText(error) }),
+    };
   }
 };

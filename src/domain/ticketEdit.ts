@@ -1,3 +1,4 @@
+import { translate, type Language } from '../i18n.ts';
 import { buildUnifiedDiff } from './unifiedDiff.ts';
 import {
   normalizeTicketPath,
@@ -251,16 +252,20 @@ export const appendTicketAnswer = (content: string, body: string): string => {
   return insertBlock(content, 'Answer', text);
 };
 
-const describe = (ticket: Ticket, edit: TicketEdit): string => {
+const describe = (ticket: Ticket, edit: TicketEdit, language: Language): string => {
+  const none = translate(language, 'summary.none');
   switch (edit.kind) {
     case 'status':
-      return `Status: ${ticket.status ?? '(none)'} → ${edit.status}`;
+      return translate(language, 'summary.status', { from: ticket.status ?? none, to: edit.status });
     case 'blockedBy':
-      return `Blocked by: ${ticket.blockedBy.map((ref) => ref.number).join(', ') || '(none)'} → ${formatBlockedByRefs(edit.blockedBy)}`;
+      return translate(language, 'summary.blockedBy', {
+        from: ticket.blockedBy.map((ref) => ref.number).join(', ') || none,
+        to: formatBlockedByRefs(edit.blockedBy),
+      });
     case 'comment':
-      return 'Append a comment under ## Comments';
+      return translate(language, 'summary.comment');
     case 'answer':
-      return 'Append an answer under ## Answer';
+      return translate(language, 'summary.answer');
   }
 };
 
@@ -295,7 +300,7 @@ export const applyTicketEdit = (ticket: Ticket, edit: TicketEdit): string => {
  * Produce exactly what would be written, plus a unified diff for the
  * confirmation step. Nothing touches disk here.
  */
-export const previewTicketEdit = (ticket: Ticket, edit: TicketEdit): TicketEditPreview => {
+export const previewTicketEdit = (ticket: Ticket, edit: TicketEdit, language: Language = 'en'): TicketEditPreview => {
   const after = applyTicketEdit(ticket, edit);
   return {
     path: ticket.path,
@@ -303,7 +308,7 @@ export const previewTicketEdit = (ticket: Ticket, edit: TicketEdit): TicketEditP
     after,
     diff: buildUnifiedDiff(ticket.path, ticket.content, after),
     changed: after !== ticket.content,
-    summary: describe(ticket, edit),
+    summary: describe(ticket, edit, language),
   };
 };
 
@@ -312,13 +317,17 @@ export const previewTicketEdit = (ticket: Ticket, edit: TicketEdit): TicketEditP
  * in-memory snapshot, so a Status change and a Blocked by change produce one
  * diff and one save instead of racing two dialogs at the same file.
  */
-export const previewTicketEdits = (ticket: Ticket, edits: readonly TicketEdit[]): TicketEditPreview => {
+export const previewTicketEdits = (
+  ticket: Ticket,
+  edits: readonly TicketEdit[],
+  language: Language = 'en',
+): TicketEditPreview => {
   let after = ticket.content;
   let current = ticket;
   const summaries: string[] = [];
   for (const edit of edits) {
     const next = applyTicketEdit(current, edit);
-    summaries.push(describe(current, edit));
+    summaries.push(describe(current, edit, language));
     after = next;
     current = { ...current, content: next };
   }

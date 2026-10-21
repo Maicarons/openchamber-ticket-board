@@ -9,6 +9,7 @@
  * value starts and ends — that is what lets `ticketEdit.ts` change one line
  * without re-serialising the rest of the ticket.
  */
+import { translate, type Language } from '../i18n.ts';
 
 export const TICKET_TYPES = ['research', 'prototype', 'grilling', 'task'] as const;
 export type TicketType = (typeof TICKET_TYPES)[number];
@@ -288,9 +289,9 @@ const headingTitle = (heading: string, fallback: string): string => {
   return withoutNumber || heading.trim() || fallback;
 };
 
-const fallbackTitle = (slug: string): string => {
+const fallbackTitle = (slug: string, language: Language): string => {
   const words = slug.replace(/[-_]+/g, ' ').trim();
-  return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Untitled ticket';
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : translate(language, 'ticket.untitled');
 };
 
 export const isResolvedStatus = (status: string | null | undefined): boolean =>
@@ -308,7 +309,12 @@ export const isTriageRole = (status: string | null | undefined): status is Triag
  * could not understand. Only a non-string content or empty path is a caller
  * error.
  */
-export const parseTicketContent = (rawPath: string, content: string, vocabulary: Readonly<Record<string, string>> = {}): Ticket => {
+export const parseTicketContent = (
+  rawPath: string,
+  content: string,
+  vocabulary: Readonly<Record<string, string>> = {},
+  language: Language = 'en',
+): Ticket => {
   if (typeof content !== 'string') throw new Error('ticket content must be text');
   const info = parseTicketPath(rawPath);
   const lines = lineTexts(content);
@@ -340,13 +346,18 @@ export const parseTicketContent = (rawPath: string, content: string, vocabulary:
 
   if (statusFields.length > 1) {
     const values = new Set(statusFields.map((field) => field.value.trim().toLowerCase()));
-    if (values.size > 1) conflicts.push(`Conflicting Status lines: ${[...values].join(', ')}`);
-    else warnings.push(`Status is written ${statusFields.length} times`);
+    if (values.size > 1) {
+      conflicts.push(translate(language, 'ticket.conflictStatus', { values: [...values].join(', ') }));
+    } else {
+      warnings.push(translate(language, 'ticket.repeatedStatus', { count: statusFields.length }));
+    }
   }
   if (blockedFields.length > 1) {
-    warnings.push(`Blocked by is written ${blockedFields.length} times`);
+    warnings.push(translate(language, 'ticket.repeatedBlockedBy', { count: blockedFields.length }));
   }
-  if (typeFields.length > 1) warnings.push(`Type is written ${typeFields.length} times`);
+  if (typeFields.length > 1) {
+    warnings.push(translate(language, 'ticket.repeatedType', { count: typeFields.length }));
+  }
   fields.status = statusFields[0] ?? null;
   fields.type = typeFields[0] ?? null;
   fields.blockedBy = blockedFields[0] ?? null;
@@ -356,7 +367,7 @@ export const parseTicketContent = (rawPath: string, content: string, vocabulary:
   const rawType = fields.type?.value.trim() ?? '';
   const type = rawType ? rawType.toLowerCase() : null;
   if (type && !(TICKET_TYPES as readonly string[]).includes(type)) {
-    warnings.push(`Unknown Type "${rawType}"`);
+    warnings.push(translate(language, 'ticket.unknownType', { type: rawType }));
   }
 
   const labels = [...new Set(labelFields.flatMap((field) => splitLabels(field.value)))];
@@ -367,12 +378,12 @@ export const parseTicketContent = (rawPath: string, content: string, vocabulary:
 
   const blockedBy = fields.blockedBy ? parseBlockedBy(fields.blockedBy.value) : [];
   if (blockedBy.some((ref) => info.numberValue !== null && ref.value === info.numberValue)) {
-    warnings.push('Ticket lists itself in Blocked by');
+    warnings.push(translate(language, 'ticket.selfBlocked'));
   }
 
   const heading = firstHeading(lines, 1);
-  if (!heading) warnings.push('No H1 title; using the file name');
-  const title = headingTitle(heading?.text ?? '', fallbackTitle(info.slug));
+  if (!heading) warnings.push(translate(language, 'ticket.noTitle'));
+  const title = headingTitle(heading?.text ?? '', fallbackTitle(info.slug, language));
   const comments = sectionBodies(lines, 'Comments').join('\n\n');
   const answer = sectionBodies(lines, 'Answer').join('\n\n');
 
@@ -383,7 +394,7 @@ export const parseTicketContent = (rawPath: string, content: string, vocabulary:
     !isClaimedStatus(status) &&
     !Object.values(vocabulary).some((label) => label.trim().toLowerCase() === status)
   ) {
-    warnings.push(`Unrecognised Status "${rawStatus}"`);
+    warnings.push(translate(language, 'ticket.unknownStatus', { status: rawStatus }));
   }
 
   return {
@@ -410,8 +421,12 @@ export const parseTicketContent = (rawPath: string, content: string, vocabulary:
   };
 };
 
-export const parseTicket = (rawPath: string, content: string, vocabulary: Readonly<Record<string, string>> = {}): Ticket =>
-  parseTicketContent(rawPath, content, vocabulary);
+export const parseTicket = (
+  rawPath: string,
+  content: string,
+  vocabulary: Readonly<Record<string, string>> = {},
+  language: Language = 'en',
+): Ticket => parseTicketContent(rawPath, content, vocabulary, language);
 
 /** A name first, always; the id is a fallback for a file with no heading. */
 export const ticketName = (ticket: Pick<Ticket, 'title'>): string => ticket.title;

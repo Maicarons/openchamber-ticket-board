@@ -1,6 +1,6 @@
 {
   "name": "openchamber-ticket-board",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "private": true,
   "description": "A local-first ticket board for OpenChamber that reads Matt Pocock ticket files and links tickets to real OpenCode sessions.",
   "license": "Apache-2.0",

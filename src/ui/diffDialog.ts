@@ -1,10 +1,12 @@
 import { mountBanner, mountButton } from '@openchamber/sdk/ui';
+import { translator, type Language } from '../i18n.ts';
 import { el } from './dom.ts';
 
 export type DiffDialogProps = {
   title: string;
   summary: string;
   diff: string;
+  language: Language;
   confirmLabel?: string;
   onConfirm: () => Promise<void>;
   onCancel: () => void;
@@ -15,6 +17,7 @@ export type DiffDialogProps = {
  * the exact unified diff the ticket file is about to receive.
  */
 export const mountDiffDialog = (root: Element, props: DiffDialogProps) => {
+  const t = translator(props.language);
   const overlay = el('div', 'kb-overlay');
   overlay.setAttribute('role', 'dialog');
   overlay.setAttribute('aria-modal', 'true');
@@ -45,16 +48,20 @@ export const mountDiffDialog = (root: Element, props: DiffDialogProps) => {
 
   const footer = el('div', 'kb-row between');
   dialog.append(footer);
-  mountButton(footer, { label: 'Cancel', variant: 'outline', onClick: props.onCancel });
+  mountButton(footer, { label: t('diff.cancel'), variant: 'outline', onClick: props.onCancel });
   const confirm = mountButton(footer, {
-    label: props.confirmLabel ?? 'Write these changes',
+    label: props.confirmLabel ?? t('diff.write'),
     onClick: () => {
       void (async () => {
         confirm.update({ loading: true });
         try { await props.onConfirm(); }
         catch (error) {
           errorSlot.hidden = false;
-          banner.update({ tone: 'error', title: 'Could not write', body: error instanceof Error ? error.message : String(error) });
+          banner.update({
+            tone: 'error',
+            title: t('diff.couldNotWrite'),
+            body: error instanceof Error ? error.message : String(error),
+          });
         }
         finally { confirm.update({ loading: false }); }
       })();

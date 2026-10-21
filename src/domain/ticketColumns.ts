@@ -5,6 +5,7 @@ import {
   type Ticket,
 } from './ticket.ts';
 import { DEFAULT_TRIAGE_LABELS, triageRoleForStatus, type TriageLabels } from './triageLabels.ts';
+import { translate, type Language } from '../i18n.ts';
 
 /**
  * The board's six columns, in the order a person reads a queue. These are
@@ -21,6 +22,18 @@ export const TICKET_COLUMN_LABELS: Record<TicketColumn, string> = {
   blocked: 'Blocked',
   human: 'Needs human',
   done: 'Done',
+};
+
+export const ticketColumnLabel = (column: TicketColumn, language: Language = 'en'): string => {
+  const key = {
+    triage: 'column.triage',
+    'needs-info': 'column.needsInfo',
+    ready: 'column.ready',
+    blocked: 'column.blocked',
+    human: 'column.human',
+    done: 'column.done',
+  } as const;
+  return translate(language, key[column]);
 };
 
 export type BlockerResolution = {
@@ -164,14 +177,15 @@ export const blockingReasons = (
   ticket: Ticket,
   siblings: readonly Ticket[],
   labels: TriageLabels = DEFAULT_TRIAGE_LABELS,
+  language: Language = 'en',
 ): string[] => {
   const state = resolveBlockers(ticket, siblings, labels);
   return state.blockers
     .filter((blocker) => !blocker.resolved)
     .map((blocker) =>
       blocker.ticket
-        ? `${blocker.ticket.title} (#${blocker.ref.number}) is still open`
-        : `Ticket #${blocker.ref.number} is not in the loaded snapshot`,
+        ? translate(language, 'blocker.open', { title: blocker.ticket.title, number: blocker.ref.number })
+        : translate(language, 'blocker.missing', { number: blocker.ref.number }),
     );
 };
 

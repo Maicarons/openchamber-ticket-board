@@ -12,6 +12,7 @@ The extension id stays `kanban-board` and the panel is still called **Kanban**, 
 - **Dependencies from `Blocked by:`.** A missing blocker blocks conservatively rather than inventing a ready ticket.
 - **Triage vocabulary from the repository.** `docs/agents/triage-labels.md` can map the five canonical roles to labels your tracker actually uses.
 - **Skill actions.** Wayfinder, to-tickets, to-spec, triage, implement, implement-spec, code-review and handoff each fill the agent prompt with the skill name, ticket path/number and feature. The existing **Start Agent** button sends it.
+- **English and Chinese.** The board follows OpenChamber's locale by default, and the full page has a language selector (Auto, English, 中文). Labels, reasons, dialogs and messages are translated; ticket statuses, file contents, skill prompts and commit messages stay in their canonical form.
 - **Linked sessions.** A ticket keeps its session id, worktree and an attention marker. Deleting a session unlinks it; archiving a session or deleting a worktree clears just that link.
 - **Write safety.** A status change or dependency edit opens a unified diff first. The service writes only if the file still has the exact bytes that were previewed, and only under `.scratch/`.
 - **Single-ticket commits.** **Commit this change** runs `git add -- <ticket>` and `git commit -m "tickets: …" -- <ticket>` for that one file. It never runs `git add -A` and never commits unless you ask.
@@ -101,6 +102,7 @@ The rail panel shows a compact summary. The full board is the page.
 - **Action buttons** replace the prompt with the matching skill invocation and focus the description box. Edit it if you like, then press **Start Agent**.
 - **Claim** sets `Status: claimed` through the same diff confirmation.
 - **Commit this change** is offered after a successful write, but never pressed for you.
+- **Language** is in the page toolbar. Auto follows the host locale; English and 中文 override it. The rail panel follows the same stored choice.
 - **Refresh** rereads the files. If a ticket changed on disk, the write is rejected with a conflict instead of overwriting it.
 
 The board shows one project at a time because blocker numbers are scoped to a feature inside a repository. A feature selector and free-text search narrow the board; search never changes which card is **Next**.
@@ -112,7 +114,7 @@ Ticket files hold everything substantive: status, type, dependencies, prose, com
 `host.storage` holds only:
 
 - one **ticket link** record per project + ticket path: session id, worktree, source branch and `needsAttentionSince`;
-- **prefs**: selected project, feature, search text, and the ticket that was open.
+- **prefs**: selected project, feature, search text, language preference, and the ticket that was open.
 
 Links are keyed by project and path, so two projects cannot collide. If a ticket file disappears, its link is removed only when the scan of that project was complete; an incomplete snapshot never deletes links. Malformed records are skipped and reported, never partly trusted.
 
