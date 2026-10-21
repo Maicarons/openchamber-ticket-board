@@ -9,6 +9,7 @@ import {
 } from './ticketColumns.ts';
 import { DEFAULT_TRIAGE_LABELS, triageRoleForStatus, statusForTriageRole, type TriageLabels } from './triageLabels.ts';
 import type { TicketLink } from './ticketIndex.ts';
+import type { Language } from '../i18n.ts';
 
 /** One ticket together with the project it was read from and its session link. */
 export type BoardTicket = {
@@ -37,10 +38,11 @@ export const boardTicketsFromFiles = (
   projectDirectory: string,
   links: ReadonlyMap<string, TicketLink> = new Map(),
   labels: TriageLabels = DEFAULT_TRIAGE_LABELS,
+  language: Language = 'en',
 ): BoardTicket[] =>
   files
     .map((file) => {
-      const ticket = parseTicket(file.path, file.content, labels);
+      const ticket = parseTicket(file.path, file.content, labels, language);
       return { ticket, projectId, projectDirectory, link: links.get(ticket.path) ?? null };
     })
     .filter((entry) => entry.ticket.kind === 'ticket');
@@ -49,9 +51,10 @@ export const boardTicketsFromFiles = (
 export const contextFiles = (
   files: readonly TicketFile[],
   labels: TriageLabels = DEFAULT_TRIAGE_LABELS,
+  language: Language = 'en',
 ): Ticket[] =>
   files
-    .map((file) => parseTicket(file.path, file.content, labels))
+    .map((file) => parseTicket(file.path, file.content, labels, language))
     .filter((ticket) => ticket.kind !== 'ticket');
 
 export const featureOf = (entry: Pick<BoardTicket, 'ticket'>): string => entry.ticket.feature;

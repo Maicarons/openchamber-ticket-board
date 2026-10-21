@@ -866,8 +866,8 @@ const mountBoardView = (host: BoardHost, root: Element, props: BoardViewProps) =
         return;
       }
 
-      const context = contextFiles(bundle.files, bundle.triageLabels);
-      const entries = boardTicketsFromFiles(bundle.files, validProject, directory, new Map(index.links.filter((link) => link.projectId === validProject).map((link) => [link.path, link])), bundle.triageLabels);
+      const context = contextFiles(bundle.files, bundle.triageLabels, props.language);
+      const entries = boardTicketsFromFiles(bundle.files, validProject, directory, new Map(index.links.filter((link) => link.projectId === validProject).map((link) => [link.path, link])), bundle.triageLabels, props.language);
       const availableFeatures = featureNames(entries, context);
       const feature = prefs.feature === ALL_FEATURES || availableFeatures.includes(prefs.feature) ? prefs.feature : ALL_FEATURES;
       filter = { ...filter, feature };

@@ -207,6 +207,16 @@ const EN = {
   'status.resolved': 'resolved',
   'status.wontfix': 'wontfix',
 
+  'ticket.untitled': 'Untitled ticket',
+  'ticket.conflictStatus': 'Conflicting Status lines: {values}',
+  'ticket.repeatedStatus': 'Status is written {count} times',
+  'ticket.repeatedBlockedBy': 'Blocked by is written {count} times',
+  'ticket.repeatedType': 'Type is written {count} times',
+  'ticket.unknownType': 'Unknown Type "{type}"',
+  'ticket.selfBlocked': 'Ticket lists itself in Blocked by',
+  'ticket.noTitle': 'No H1 title; using the file name',
+  'ticket.unknownStatus': 'Unrecognised Status "{status}"',
+
   'blocker.open': '{title} (#{number}) is still open',
   'blocker.missing': 'Ticket #{number} is not in the loaded snapshot',
 
@@ -438,6 +448,16 @@ const ZH: Record<TranslationKey, string> = {
   'status.claimed': '已领取',
   'status.resolved': '已解决',
   'status.wontfix': '不修复',
+
+  'ticket.untitled': '无标题工单',
+  'ticket.conflictStatus': 'Status 行冲突：{values}',
+  'ticket.repeatedStatus': 'Status 写了 {count} 次',
+  'ticket.repeatedBlockedBy': 'Blocked by 写了 {count} 次',
+  'ticket.repeatedType': 'Type 写了 {count} 次',
+  'ticket.unknownType': '未知类型“{type}”',
+  'ticket.selfBlocked': '工单在 Blocked by 中列出了自己',
+  'ticket.noTitle': '没有 H1 标题；使用文件名',
+  'ticket.unknownStatus': '无法识别的状态“{status}”',
 
   'blocker.open': '{title}（#{number}）仍未完成',
   'blocker.missing': '工单 #{number} 不在已加载的快照中',

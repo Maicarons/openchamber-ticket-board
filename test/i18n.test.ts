@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseTicket } from '../src/domain/ticket.ts';
+import { parseTicket, parseTicketContent } from '../src/domain/ticket.ts';
 import { actionsForTicket, type ActionContext } from '../src/domain/ticketActions.ts';
 import { ticketColumnLabel } from '../src/domain/ticketColumns.ts';
 import { asLanguagePreference, resolveLanguage, translate } from '../src/i18n.ts';
@@ -53,6 +53,18 @@ test('skill actions and their disabled reasons follow the selected language', ()
   assert.equal(actions.find((action) => action.id === 'implement')?.label, '实现');
   assert.match(actions.find((action) => action.id === 'implement')?.disabledReason ?? '', /^被阻塞：/);
   assert.equal(actions.find((action) => action.id === 'to-tickets')?.label, '拆分为工单');
+});
+
+test('ticket file diagnostics are translated too', () => {
+  const ticket = parseTicketContent(
+    '.scratch/demo/issues/08-clean-up-cache.md',
+    'Status: needs-info\nStatus: ready-for-agent\nBlocked by: 08\nType: unusual\n',
+    {},
+    'zh',
+  );
+  assert.match(ticket.conflicts[0] ?? '', /^Status 行冲突：/);
+  assert.ok(ticket.warnings.some((warning) => warning.includes('未知类型')));
+  assert.ok(ticket.warnings.some((warning) => warning.includes('列出了自己')));
 });
 
 test('preferences default to auto and reject an unknown language', () => {

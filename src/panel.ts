@@ -62,8 +62,15 @@ host.onReady(async (ctx) => {
       spinner.dispose();
       return;
     }
-    const entries = boardTicketsFromFiles(bundle.files, project.id, project.directory, new Map(), bundle.triageLabels);
-    const context = contextFiles(bundle.files, bundle.triageLabels);
+    const entries = boardTicketsFromFiles(
+      bundle.files,
+      project.id,
+      project.directory,
+      new Map(),
+      bundle.triageLabels,
+      language,
+    );
+    const context = contextFiles(bundle.files, bundle.triageLabels, language);
     const open = entries.filter((entry) => columnOf(entry, entries, bundle.triageLabels) !== 'done').length;
     const next = [...frontierPaths(entries, bundle.triageLabels)][0];
     const nextEntry = entries.find((entry) => entry.ticket.path === next);
